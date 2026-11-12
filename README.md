@@ -62,21 +62,27 @@ published for amd64 and arm64. Copy it to `$PROOF_HOME/appliance.lock`, or write
 
 ```sh
 docker login ghcr.io                      # Yield's and Lens's images are private
-proof stack pin --channel develop         # or `release` (amd64 only until the next promotion)
-proof secrets set TARGET_KEY              # hidden prompt, or a value on stdin; once per secret
+proof stack pin                           # develop by default; refuses images this host cannot run
+proof secrets set ACME_TARGET_KEY         # hidden prompt, or a value on stdin; once per secret
 proof secrets list                        # names only
-proof stack up                            # pull, start, seed, wait until healthy
+proof stack up --bundle <bundle>          # render, pull, start, seed, wait until healthy
 proof stack status                        # image digest, state, health and ports per service
 proof doctor --no-models --stack          # each service's health on its loopback port
 proof stack down                          # stop; the stores and the registry keep their volumes
 ```
 
-Compose renders under `$PROOF_HOME/stack` with Yield's and Lens's seed assets beside it, so the
-host needs no checkout of either repository. `up` refuses an image with no build for the host's
-architecture, a secrets file others can read, and a secret named `YIELD_*` or `LENS_*` that would
-reconfigure a service (the store credentials are the exception: `YIELD_S3_ACCESS_KEY`,
-`YIELD_S3_SECRET_KEY`, `LENS_S3_ACCESS_KEY`, `LENS_S3_SECRET_KEY` and
-`LENS_WEBHOOK_SIGNING_SECRET` override the development defaults).
+`up` reads the models manifest (`$PROOF_HOME/models.yaml`, or `--manifest`) for two things: the
+models' network every job joins, and the chat model Lens's Reader and Curator ask, with its
+reasoning switch off. It refuses a manifest with no chat model. It renders compose under
+`$PROOF_HOME/stack` with Yield's and Lens's seed assets beside it, so the host needs no checkout of
+either repository, and `status`, `logs` and `down` act on that file without rendering it again.
+
+No container loads the secrets file. Yield's API and compute get exactly the secrets the bundles
+passed with `--bundle` declare, and `up` refuses one the file does not define; Lens gets none.
+Compose also substitutes the store credentials from the file when they are set there
+(`YIELD_S3_ACCESS_KEY`, `YIELD_S3_SECRET_KEY`, `LENS_S3_ACCESS_KEY`, `LENS_S3_SECRET_KEY`,
+`LENS_WEBHOOK_SIGNING_SECRET`), else the development defaults. Run `up` again after adding a
+bundle so Yield gets its secrets.
 
 | From the host | Port | From a job container |
 |---|---|---|
@@ -86,7 +92,8 @@ reconfigure a service (the store credentials are the exception: `YIELD_S3_ACCESS
 | Brain registry | `localhost:5051` (`vitruvio dist push --insecure`) | `brain-registry:5000` (a run's `kb_ref`) |
 | Models | `127.0.0.1:<port>` | `http://<name>:8000/v1` |
 
-Every job Yield and Lens launch joins `proof-stack` (the hops between the two) and `proof-models`.
+Every job Yield and Lens launch joins `proof-stack` (the hops between the two) and the models'
+network.
 [ADR 0002](docs/adr/0002-the-stack-is-one-compose-project-rendered-from-the-lock.md) says why the
 stack is rendered here rather than taken from each repository's compose file.
 
