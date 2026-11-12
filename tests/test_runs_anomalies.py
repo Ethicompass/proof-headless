@@ -50,7 +50,8 @@ def at(minutes_ago: float) -> datetime:
     ],
 )
 def test_stalled(phase: str, quiet_minutes: float, expected: bool) -> None:
-    found = anomalies.stalled(run(phase), since=at(quiet_minutes), now=NOW)
+    limit = timedelta(minutes=15)
+    found = anomalies.stalled(run(phase), since=at(quiet_minutes), now=NOW, limit=limit)
     assert (found is not None) is expected
     if found is not None:
         assert found.kind is Kind.STALLED
@@ -204,6 +205,41 @@ def test_the_detector_measures_a_stall_from_the_last_change() -> None:
     assert look(15, stuck) == []
     assert look(16, run("attacking", closed=5)) == []
     assert look(27, run("attacking", closed=5)) == [Kind.STALLED]
+
+
+def test_a_driver_log_line_is_progress_and_a_budget_caps_the_bound() -> None:
+    budget = {"r1": timedelta(minutes=10)}
+    detector = Detector(stall_after=timedelta(minutes=45), stall_limits=budget)
+    stuck = run("attacking", closed=4)
+    lines: list[LogLine] = []
+
+    def look(minute: int, talking: bool = False) -> list[Kind]:
+        moment = NOW + timedelta(minutes=minute)
+        if talking:
+            lines.append(LogLine(moment, "POST /v1/chat/completions 200"))
+        observed = Observation(
+            at=moment,
+            runs={"r1": stuck},
+            containers={DRIVER.name: DRIVER},
+            logs={DRIVER.name: list(lines)},
+            containers_read=True,
+        )
+        return [a.kind for a in detector.examine(observed)]
+
+    assert look(0) == []
+    for minute in range(1, 30):
+        assert look(minute, talking=True) == []
+    assert detector.driver_moved == {"r1"}
+    assert look(38) == []
+    assert detector.driver_moved == set()
+    assert look(39) == [Kind.STALLED]
+
+
+def test_an_observation_tells_an_absent_driver_from_an_unread_one() -> None:
+    assert Observation(at=NOW).driver("r1") is None
+    assert Observation(at=NOW, containers_read=True).driver("r1") == "absent"
+    read = Observation(at=NOW, containers={DRIVER.name: DRIVER}, containers_read=True)
+    assert read.driver("r1") == DRIVER.state
 
 
 def test_parse_logs_reads_docker_timestamps() -> None:

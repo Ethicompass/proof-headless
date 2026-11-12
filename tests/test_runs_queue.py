@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from proof_headless.runs.client import RunStatus
+from proof_headless.runs.observe import Container, LogLine, Observation
 from proof_headless.runs.queue import Policy, Queue, new_state, read_specs
 from proof_headless.runs.state import QueueState, RunState, Store
 from tests.fake_yield import HAPPY, FakeYield, status
@@ -360,8 +362,6 @@ def test_a_run_that_never_advances_closes_as_stalled_and_the_queue_ends(tmp_path
 
 
 def test_a_resumed_queue_does_not_report_old_log_lines_again(tmp_path: Path) -> None:
-    from proof_headless.runs.observe import Container, LogLine, Observation
-
     fake = FakeYield({"r1": [status("attacking", n) for n in range(30)]})
     clock = Clock()
     lines: list[LogLine] = []
@@ -470,3 +470,113 @@ def test_a_lens_launch_that_cannot_happen_is_an_error(tmp_path: Path) -> None:
     assert state.entry("r1").lens == "failed"
     failed = next(e for e in queue.store.events() if e.kind == "lens_failed")
     assert failed.severity == "error"
+
+
+class Driver:
+    """The observation of a run's driver container, whose state and log a test changes."""
+
+    def __init__(self, clock: Clock, run_id: str = "r1", state: str | None = "running") -> None:
+        self.clock = clock
+        self.name = f"yield-driver-{run_id}"
+        self.state = state
+        self.lines: list[LogLine] = []
+        self.talking = False
+
+    def __call__(self, ids: list[str], statuses: dict[str, RunStatus | None]) -> Observation:
+        if self.talking:
+            self.lines.append(LogLine(self.clock(), "POST /v1/chat/completions 200"))
+        containers = {}
+        if self.state is not None:
+            containers[self.name] = Container(self.name, self.state)
+        return Observation(
+            at=self.clock(),
+            runs=statuses,
+            containers=containers,
+            logs={self.name: list(self.lines)} if containers else {},
+            containers_read=True,
+        )
+
+
+def _watched(tmp_path: Path, fake: FakeYield, driver: Driver, policy: Policy) -> Queue:
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), policy=policy, clock=driver.clock)
+    queue.observe = driver
+    return queue
+
+
+def _ticks(queue: Queue, clock: Clock, count: int) -> None:
+    for _ in range(count):
+        queue.tick()
+        clock.sleep(0)
+
+
+def test_a_flat_count_with_an_advancing_driver_log_is_not_stalled(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": [status("attacking", 26, planned=32)]})
+    clock = Clock(step=timedelta(minutes=1))
+    driver = Driver(clock)
+    driver.talking = True
+    policy = Policy(stall_after=timedelta(minutes=15), stall_resubmits=2)
+    queue = _watched(tmp_path, fake, driver, policy)
+    _ticks(queue, clock, 120)
+    assert queue.state.entry("r1").state is RunState.ACTIVE
+    assert fake.posts == ["r1"]
+    kinds = {event.kind for event in queue.store.events()}
+    assert not kinds & {"stalled", "anomaly.stalled", "driver_silent"}
+
+
+def test_a_flat_count_with_its_driver_gone_is_posted_again(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": [status("attacking", 4)]})
+    clock = Clock(step=timedelta(minutes=5))
+    driver = Driver(clock, state="exited")
+    policy = Policy(stall_after=timedelta(minutes=15), stall_resubmits=2)
+    queue = _watched(tmp_path, fake, driver, policy)
+    state = _run(queue, clock)
+    assert state.entry("r1").state is RunState.STALLED
+    assert fake.posts == ["r1"] * 3
+
+
+def test_a_silent_driver_that_runs_is_reported_and_never_closed(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": [status("attacking", 4)]})
+    clock = Clock(step=timedelta(minutes=5))
+    driver = Driver(clock)
+    policy = Policy(stall_after=timedelta(minutes=15), stall_resubmits=2)
+    queue = _watched(tmp_path, fake, driver, policy)
+    _ticks(queue, clock, 24)
+    entry = queue.state.entry("r1")
+    assert entry.state is RunState.ACTIVE
+    assert fake.posts == ["r1"]
+    silent = [e for e in queue.store.events() if e.kind == "driver_silent"]
+    assert [e.severity for e in silent] == ["warning"] * entry.silent_reports
+    assert len(silent) == 7
+    assert not any(e.kind == "stalled" for e in queue.store.events())
+
+
+def test_a_driver_that_talks_again_ends_the_quiet_stretch(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": [status("attacking", 4)]})
+    clock = Clock(step=timedelta(minutes=5))
+    driver = Driver(clock)
+    policy = Policy(stall_after=timedelta(minutes=15))
+    queue = _watched(tmp_path, fake, driver, policy)
+    _ticks(queue, clock, 5)
+    assert queue.state.entry("r1").silent_reports == 1
+    driver.talking = True
+    _ticks(queue, clock, 1)
+    driver.talking = False
+    assert queue.state.entry("r1").silent_reports == 0
+    _ticks(queue, clock, 2)
+    assert queue.state.entry("r1").silent_reports == 0
+
+
+def test_a_short_wall_budget_caps_the_stall_bound(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": [status("attacking", 4)]})
+    clock = Clock(step=timedelta(minutes=5))
+    specs = _specs(tmp_path, "r1")
+    specs["r1"].write_text(
+        json.dumps({"run_id": "r1", "metric_ids": ["bias"], "budget": {"max_wall_seconds": 600}})
+    )
+    queue = _queue(tmp_path, fake, specs, policy=Policy(stall_resubmits=1), clock=clock)
+    _ticks(queue, clock, 4)
+    assert fake.posts == ["r1", "r1"]
+
+
+def test_the_default_stall_bound_outlasts_the_measured_busy_stretch() -> None:
+    assert Policy().stall_after > timedelta(minutes=15) * 2

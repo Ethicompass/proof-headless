@@ -2,9 +2,9 @@
 
 Each rule is a small pure function from what was observed to an `Anomaly` or nothing, which is
 what lets them be tested as tables. They generalize the poller the last engagement ran beside its
-queue: a run whose phase and counts stop moving, failed traces that keep growing, rate limits and
-timeouts in a driver's or a measure's log, a measure that has made no model call for minutes, a
-job container that exited with an error, a model that is not healthy.
+queue: a run whose phase and counts stop moving while its driver logs nothing, failed traces that
+keep growing, rate limits and timeouts in a driver's or a measure's log, a measure that has made
+no model call for minutes, a job container that exited with an error, a model that is not healthy.
 
 The `Detector` is the only part with memory. It keeps what the rules need from the previous
 observation (when each run last moved, how many traces had failed, how far each log was read) and
@@ -25,9 +25,17 @@ from proof_headless.runs.client import IN_FLIGHT, Phase, RunStatus
 from proof_headless.runs.observe import Container, LogLine, Observation, Service
 from proof_headless.runs.state import Severity
 
-STALL_AFTER = timedelta(minutes=15)
-"""Longer than a driver's quietest honest stretch: it beats every minute and every fifty closed
-units, and one slow target turn under retries took several minutes in the last engagement."""
+STALL_AFTER = timedelta(minutes=45)
+"""How long a run in flight may go without its counts moving and without a new line in its
+driver's log before it reads as stalled.
+
+Fifteen minutes was too short. On the appliance's load test of three concurrent runs (#27) the
+last conversations of a run kept its closed count flat for more than 15 minutes, each of them
+carrying many judge calls, while its driver called the model every 10 to 15 seconds; the queue
+re-posted two busy runs and would have closed them. A new driver log line now counts as progress,
+so where the containers can be read a busy run never comes near the bound. It matters where they
+cannot, and there the counts are the only signal: three times the measured stretch leaves room
+for a slower target or judge. A run whose budget allows less wall time is held to its budget."""
 MEASURE_IDLE_AFTER = timedelta(minutes=6)
 """What the last engagement's poller used: a measure that had made no model call for six minutes
 was worth a look, though its own timeout and retry usually healed it."""
@@ -275,6 +283,11 @@ class Detector:
     """Log lines at or before this moment are history, not news: a container first seen has its
     tail read only past it. A queue starts it at its own start, a resumed one at its last look, a
     watcher at its launch; the history is in the queue's event log. `None` reads every line."""
+    stall_limits: dict[str, timedelta] = field(default_factory=dict)
+    """Per run, a stall bound shorter than `stall_after`, from the run's own budget."""
+    driver_moved: set[str] = field(default_factory=set)
+    """The runs whose driver logged a new line in the last observation: a driver that is still
+    talking is a run that is still working, whatever its counts say."""
 
     def forget(self, run_id: str) -> None:
         """Measure the run's progress afresh, as after it was posted again."""
@@ -302,10 +315,11 @@ class Detector:
                 continue
             progress = signature(run)
             previous = self.progress.get(run_id)
-            if previous is None or previous[0] != progress:
+            if previous is None or previous[0] != progress or run_id in self.driver_moved:
                 self.progress[run_id] = (progress, observation.at)
             since = self.progress[run_id][1]
-            stall = stalled(run, since=since, now=observation.at, limit=self.stall_after)
+            limit = min(self.stall_after, self.stall_limits.get(run_id, self.stall_after))
+            stall = stalled(run, since=since, now=observation.at, limit=limit)
             grown = failed_traces(self.failed.get(run_id, 0), run)
             self.failed[run_id] = max(run.failed, self.failed.get(run_id, 0))
             found += [a for a in (stall, liveness(run), grown) if a is not None]
@@ -313,17 +327,22 @@ class Detector:
 
     def _containers(self, observation: Observation) -> list[Anomaly]:
         found: list[Anomaly] = []
+        self.driver_moved = set()
         for name, container in observation.containers.items():
             lines = observation.logs.get(name, [])
             seen = {kind: self.tallies.get(f"{kind}:{name}", 0) for kind, *_ in LOG_RULES}
-            found += log_problems(container, self._new_lines(name, lines), seen=seen)
+            new = self._new_lines(name, lines)
+            if container.role == "driver" and new:
+                self.driver_moved.add(container.run_id)
+            found += log_problems(container, new, seen=seen)
             idle = measure_idle(container, lines, now=observation.at, limit=self.measure_idle_after)
             found += [a for a in (idle, container_exited(container)) if a is not None]
         return found
 
     def examine(self, observation: Observation) -> list[Anomaly]:
         """Every anomaly in `observation` that was not already holding at the last one."""
-        current = self._runs(observation) + self._containers(observation)
+        containers = self._containers(observation)
+        current = self._runs(observation) + containers
         for model, state in (observation.models or {}).items():
             down = model_down(model, state)
             if down is not None:

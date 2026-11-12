@@ -35,7 +35,7 @@ from proof_headless.models import manifest as manifests
 from proof_headless.models import render
 from proof_headless.models.manifest import ManifestInvalid
 from proof_headless.runs import remeasure as remeasuring
-from proof_headless.runs.anomalies import Detector
+from proof_headless.runs.anomalies import STALL_AFTER, Detector
 from proof_headless.runs.board import Board, Sampler, event_line, plain
 from proof_headless.runs.client import Unreachable, Yield, metric_outcomes
 from proof_headless.runs.lens_follow import LensFollower
@@ -150,7 +150,13 @@ def queue_command(
         1, "--retries", min=0, help="Identical re-POSTs of a run Yield reads as failed."
     ),
     stall_minutes: float = typer.Option(
-        15.0, "--stall-minutes", min=1, help="Minutes without progress that make a run stalled."
+        STALL_AFTER.total_seconds() / 60,
+        "--stall-minutes",
+        min=1,
+        help=(
+            "Minutes without progress (counts or driver log) that make a run stalled; a run's "
+            "budget.max_wall_seconds caps it. A run whose driver runs is never closed as stalled."
+        ),
     ),
     poll_seconds: float = typer.Option(
         20.0, "--poll-seconds", min=1, help="Seconds between polls."

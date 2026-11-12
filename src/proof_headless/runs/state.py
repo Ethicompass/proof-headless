@@ -101,6 +101,12 @@ class Entry(BaseModel):
     without posting it again."""
     stall_resubmits: int = 0
     """Re-POSTs after the run stopped advancing before measuring."""
+    driver: str | None = None
+    """The state of the run's driver container at the queue's last look (`running`, `exited`,
+    `absent`, ...), `None` when the containers could not be read. A run whose driver runs is
+    never re-posted nor closed as stalled."""
+    silent_reports: int = 0
+    """How many times the current quiet stretch was reported while the driver ran."""
     submit_failures: int = 0
     """Submissions Yield did not answer, or answered 503."""
     error: str | None = None
