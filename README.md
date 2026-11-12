@@ -93,9 +93,25 @@ the stack serves declare, and `up` refuses one the file does not define; Lens ge
 it, and `proof stack forget-bundle <client>` removes it. Without a bundle every run is refused at
 Yield's gate, which requires the connector's secret. `proof stack render` prints a preview and
 writes the running stack's file only with `--write`.
-Compose also substitutes the store credentials from the file when they are set there
-(`YIELD_S3_ACCESS_KEY`, `YIELD_S3_SECRET_KEY`, `LENS_S3_ACCESS_KEY`, `LENS_S3_SECRET_KEY`,
-`LENS_WEBHOOK_SIGNING_SECRET`), else the development defaults.
+Compose also substitutes the stack's own credentials from the file: the stores' root user and
+password, which are also the S3 keys Yield and Lens use (`YIELD_S3_ACCESS_KEY`,
+`YIELD_S3_SECRET_KEY`, `LENS_S3_ACCESS_KEY`, `LENS_S3_SECRET_KEY`), and Lens's
+`LENS_WEBHOOK_SIGNING_SECRET`. The first `up` generates each one the file does not define (32
+random letters and digits, written at mode 600) and never replaces one it does. The compose file
+refers to them as `${NAME:?...}` only and holds no value, so the evidence package can carry it
+and still pass its secret scan.
+
+### A stack started with the old default credentials
+
+Stacks started before the credentials were generated ran their stores with the development
+defaults (`yieldadmin`, `lensadmin`). Nothing needs to be done for them: the next `up` generates
+the missing credentials, and compose recreates the stores, Yield and Lens with the same new
+values. MinIO reads its root credentials from the environment at every start and keeps none in
+its volume. Measured on the DGX Spark with the stack's own MinIO image
+(`pgsty/minio:RELEASE.2026-08-04T00-00-00Z`): a volume started with one root user and password,
+then restarted with another pair, let the new pair in, refused the old one, and still held the
+bucket written under the old one. To keep chosen values instead, set them with
+`proof secrets set NAME` before `up`.
 
 | From the host | Port | From a job container |
 |---|---|---|

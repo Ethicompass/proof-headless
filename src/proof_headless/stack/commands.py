@@ -3,9 +3,11 @@
 `up` is the one command that renders. It refuses what would fail late: an image with no build for
 this host (it would pull and then die with `exec format error`), a models manifest with no chat
 model for Lens, a secrets file others can read, and a secret a bundle declares that the file does
-not define. It creates the models' network when absent (`docker.ensure_network` says why it is
-external to both projects), pulls the images the APIs launch per job (neither dispatcher pulls),
-starts the project and waits until every service is healthy and every seed exited 0.
+not define. It generates the stack's own credentials the secrets file lacks before rendering
+(`credentials.ensure`), as `render --write` does. It creates the models' network when absent
+(`docker.ensure_network` says why it is external to both projects), pulls the images the APIs launch
+per job (neither dispatcher pulls), starts the project and waits until every service is healthy and
+every seed exited 0.
 
 `status`, `logs` and `down` read the compose file the stack was started from and never re-render
 it, and `render` only previews unless told `--write`, so a `pin` or a new manifest after `up`
@@ -26,7 +28,7 @@ import typer
 import yaml
 from rich.table import Table
 
-from proof_headless import paths
+from proof_headless import paths, secrets
 from proof_headless.bundle import manifest as bundles
 from proof_headless.bundle.manifest import BundleInvalid
 from proof_headless.console import err, out
@@ -42,8 +44,8 @@ from proof_headless.docker import (
 from proof_headless.models.commands import load_manifest
 from proof_headless.models.manifest import Manifest
 from proof_headless.secrets_commands import require
+from proof_headless.stack import credentials, render
 from proof_headless.stack import lock as locks
-from proof_headless.stack import render
 from proof_headless.stack.lock import Channel, Lock, LockInvalid
 from proof_headless.stack.pin import ResolveFailed, imagetools, pin
 
@@ -250,7 +252,8 @@ def render_command(
     """Print the compose file `up` would start, for the served bundles plus any --bundle.
 
     A preview by default: the file under `$PROOF_HOME/stack` is the one the running stack was
-    started from, and `status`, `logs` and `down` read it, so only `--write` replaces it.
+    started from, and `status`, `logs` and `down` read it, so only `--write` replaces it, after
+    generating the credentials it refers to that the secrets file lacks, as `up` does.
     """
     loaded = _load(lock)
     models = load_manifest(manifest)
@@ -260,6 +263,7 @@ def render_command(
         text = yaml.safe_dump(document, sort_keys=False)
         out.print(text, markup=False, highlight=False, soft_wrap=True, end="")
         return
+    _ensure_credentials()
     out.print(str(_render(loaded, models, names)))
 
 
@@ -357,6 +361,19 @@ def _explain(compose: Compose, document: dict[str, Any]) -> None:
     err.print("[muted]`proof stack status` and `proof stack logs <service>` say more.[/muted]")
 
 
+def _ensure_credentials() -> None:
+    """Generate the stack's credentials the secrets file lacks, before writing the file that
+    refers to them: compose refuses every command on that file, `down` included, while one of
+    them is missing."""
+    try:
+        generated = credentials.ensure(paths.secrets_file())
+    except secrets.SecretsFileExposed as error:
+        err.print(f"[fail]Refused.[/fail] {error}")
+        raise typer.Exit(2) from None
+    if generated:
+        err.print(f"[muted]Generated {generated} into {paths.secrets_file()}.[/muted]")
+
+
 @app.command()
 def up(
     lock: Path | None = LockOption,
@@ -378,6 +395,7 @@ def up(
             "[warn]No bundle served: Yield gets no secret, and every run is refused at its "
             "gate, which requires the connector's secret. Pass --bundle.[/warn]"
         )
+    _ensure_credentials()
     compose = project(_render(loaded, models, names))
     _record(entries)
     document = render.read(compose.file)
