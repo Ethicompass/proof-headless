@@ -66,8 +66,11 @@ reports at `/version`, the doctor's reports, and per run Yield's status and mani
 objects in Yield's store (traces, dataset) and the Lens result. Its README lists the layout and
 every gap. The store is read over its S3 API with `YIELD_S3_ACCESS_KEY` and `YIELD_S3_SECRET_KEY`
 from the secrets file; without them the traces are a recorded gap. The export is refused, and
-nothing is written, when any value of the secrets file appears in any file; the refusal names the
-file and the secret, never the value.
+nothing is written, when any value of the secrets file appears in any file, as written,
+JSON-escaped, percent-encoded or base64-encoded; zstd traces are scanned decompressed, and one that
+does not decompress refuses the package too. The refusal names the file and the secret, never the
+value. Values shorter than 8 characters are too short to match without refusing ordinary text:
+they are not looked for, and the export names those secrets on stderr and in `index.json`.
 
 Read commands take `--json`. Results go to standard output, and messages for the operator go to
 standard error.
