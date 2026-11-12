@@ -47,6 +47,11 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeCompose:
     return compose
 
 
+def _text(output: str) -> str:
+    """Output with Rich's line wrapping undone, which moves with the terminal's width."""
+    return " ".join(output.split())
+
+
 def _docker_calls(fake: FakeCompose, verb: str) -> list[list[str]]:
     return [call for call in fake.calls if call[1] == verb]
 
@@ -62,7 +67,7 @@ def test_up_creates_the_models_network_pulls_the_job_images_and_waits_until_heal
     pulled = [call[-1] for call in _docker_calls(fake, "pull")]
     assert pulled == [lock.image("yield-driver").pinned, lock.image("lens-run").pinned]
     assert any(call[-3:] == ["up", "--detach", "--remove-orphans"] for call in fake.calls)
-    assert "healthy" in result.output
+    assert "healthy" in _text(result.output)
 
 
 def test_up_refuses_images_with_no_build_for_this_host(fake: FakeCompose, tmp_path: Path) -> None:
@@ -72,7 +77,7 @@ def test_up_refuses_images_with_no_build_for_this_host(fake: FakeCompose, tmp_pa
     amd64.write_text(yaml.safe_dump(raw))
     result = runner.invoke(app, ["stack", "up", "--lock", str(amd64)])
     assert result.exit_code == 2
-    assert "yield-api" in result.output and "linux/arm64" in result.output
+    assert "yield-api" in _text(result.output) and "linux/arm64" in _text(result.output)
     assert fake.calls == []
 
 
@@ -81,7 +86,7 @@ def test_up_refuses_a_secrets_file_others_can_read(fake: FakeCompose) -> None:
     path.write_text("TARGET_KEY=x\n")
     path.chmod(0o644)
     result = runner.invoke(app, ["stack", "up", *USE_LOCK])
-    assert result.exit_code == 2 and "chmod 600" in result.output
+    assert result.exit_code == 2 and "chmod 600" in _text(result.output)
     assert fake.calls == []
 
 
@@ -91,15 +96,15 @@ def test_up_refuses_a_secret_that_would_reconfigure_yield(fake: FakeCompose) -> 
     path.chmod(0o600)
     result = runner.invoke(app, ["stack", "up", *USE_LOCK])
     assert result.exit_code == 2
-    assert "YIELD_STORE_BACKEND" in result.output
-    assert "YIELD_S3_SECRET_KEY" not in result.output.split("would reconfigure")[0]
+    assert "YIELD_STORE_BACKEND" in _text(result.output)
+    assert "YIELD_S3_SECRET_KEY" not in _text(result.output)
 
 
 def test_a_failed_seed_fails_up_with_its_log(fake: FakeCompose) -> None:
     fake.fails = frozenset({"yield-seed"})
     result = runner.invoke(app, ["stack", "up", *USE_LOCK])
     assert result.exit_code == 1
-    assert "yield-seed did not come up" in result.output
+    assert "yield-seed did not come up" in _text(result.output)
     assert any(call[-5:-2] == ["logs", "--no-color", "--tail"] for call in fake.calls)
 
 
@@ -118,9 +123,11 @@ def test_status_shows_each_service_s_digest_state_and_ports(fake: FakeCompose) -
 
 
 def test_status_before_up_reports_every_service_absent(fake: FakeCompose) -> None:
-    result = runner.invoke(app, ["stack", "status", *USE_LOCK])
+    result = runner.invoke(app, ["stack", "status", *USE_LOCK, "--json"])
     assert result.exit_code == 0, result.output
-    assert "absent" in result.output and "brain-registry" in result.output
+    rows = json.loads(result.stdout)["services"]
+    assert {row["state"] for row in rows} == {"absent"}
+    assert "brain-registry" in {row["service"] for row in rows}
 
 
 def test_status_flags_a_container_running_another_image_than_the_lock(fake: FakeCompose) -> None:
@@ -145,4 +152,4 @@ def test_logs_refuses_a_service_the_stack_does_not_have(fake: FakeCompose) -> No
 def test_a_missing_lock_is_refused_with_how_to_make_one() -> None:
     result = runner.invoke(app, ["stack", "status"])
     assert result.exit_code == 2
-    assert "proof stack pin" in result.output
+    assert "proof stack pin" in _text(result.output)
