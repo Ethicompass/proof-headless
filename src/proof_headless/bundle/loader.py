@@ -18,7 +18,7 @@ import json
 import shutil
 import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -104,10 +104,15 @@ def catalogue_body(entry: Catalogue) -> dict[str, Any]:
     return body
 
 
-def push_brain(brain: Brain, registry: str, runner: Runner, *, insecure: bool) -> Loaded:
-    """`vitruvio dist push` the brain to `registry/<repository>` and read back its digest."""
+def push_brain(brain: Brain, registry: str, runner: Runner, *, insecure: bool | None) -> Loaded:
+    """`vitruvio dist push` the brain to `registry/<repository>` and read back its digest.
+
+    `insecure` `None` passes neither flag, so the brain's own `[registry].insecure` decides.
+    """
     args = ["vitruvio", "dist", "push", "--config", str(brain.config), "--brain", brain.name]
-    args += ["--insecure" if insecure else "--no-insecure", "--json"]
+    if insecure is not None:
+        args.append("--insecure" if insecure else "--no-insecure")
+    args.append("--json")
     args.append(f"{registry}/{brain.repository}")
     result = runner(args)
     if result.returncode != 0:
@@ -131,16 +136,18 @@ def load(
     registry: str,
     declarations_dir: Path,
     runner: Runner,
-    insecure: bool,
+    insecure: bool | None,
     previous: Receipt | None = None,
     skip_brains: bool = False,
     progress: Callable[[str], None] = lambda _: None,
 ) -> Receipt:
     """Publish every piece of `bundle`, stopping at the first refusal.
 
-    The returned receipt is complete, or carries the refusal as its error. With `skip_brains`, the
-    brains of `previous` are carried over (marked `carried`), so the receipt still pins the digests
-    a run needs.
+    The returned receipt is complete, or carries the refusal as its error. A stopped load keeps
+    `previous`'s entries for the pieces it did not reach, marked `carried`: those are still live in
+    the services, and a receipt without them would lose digests a run pins. With `skip_brains`,
+    every brain the bundle declares must have a digest in `previous`, carried over, or the load
+    stops: a complete receipt always pins every brain.
     """
     receipt = Receipt(client=bundle.client)
 
@@ -174,8 +181,15 @@ def load(
                 "mapping", entry.name, _post(client, "/mappings", body, f"mapping {entry.name}")
             )
         if skip_brains:
-            kept = [item for item in (previous.loaded if previous else []) if item.kind == "brain"]
-            receipt.loaded += [Loaded("brain", i.name, digest=i.digest, carried=True) for i in kept]
+            kept = {i.name: i for i in (previous.loaded if previous else []) if i.kind == "brain"}
+            for brain in bundle.brains:
+                last = kept.get(brain.name)
+                if last is None or not last.digest:
+                    raise LoadFailed(
+                        f"brain {brain.name}: --skip-brains needs a digest from an earlier load, "
+                        f"and there is none; load once without --skip-brains"
+                    )
+                receipt.loaded.append(Loaded("brain", brain.name, digest=last.digest, carried=True))
         else:
             for brain in bundle.brains:
                 progress(f"brain {brain.name}")
@@ -188,9 +202,27 @@ def load(
             receipt.loaded.append(Loaded("declaration", declaration.path.name, digest=digest))
     except LoadFailed as error:
         receipt.error = str(error)
+        reached = {(item.kind, item.name) for item in receipt.loaded}
+        declared = _declared(bundle)
+        receipt.loaded += [
+            replace(item, carried=True)
+            for item in (previous.loaded if previous else [])
+            if (item.kind, item.name) not in reached and (item.kind, item.name) in declared
+        ]
         return receipt
     receipt.complete = True
     return receipt
+
+
+def _declared(bundle: Bundle) -> set[tuple[str, str]]:
+    """Every piece the bundle declares now, as the receipt names them."""
+    pieces = {("catalogue", c.name) for c in bundle.catalogues}
+    pieces |= {("profile", e.name) for e in bundle.profiles}
+    pieces |= {("prior", e.name) for e in bundle.priors}
+    pieces |= {("mapping", e.name) for e in bundle.mappings}
+    pieces |= {("brain", b.name) for b in bundle.brains}
+    pieces |= {("declaration", d.path.name) for d in bundle.declarations}
+    return pieces
 
 
 def read_receipt(path: Path) -> Receipt | None:
