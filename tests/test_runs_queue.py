@@ -415,3 +415,58 @@ def test_a_first_post_matching_what_yield_froze_is_accepted(tmp_path: Path) -> N
     queue = _queue(tmp_path, fake, specs, clock=clock)
     assert _run(queue, clock).succeeded
     assert fake.posts == ["r1"]
+
+
+class StubLens:
+    """Lens stages per run, one per read, the last repeated; `ensure` answers `launch_ok`."""
+
+    def __init__(self, stages: dict[str, list[str | None]], launch_ok: bool = True) -> None:
+        self.stages = stages
+        self.launch_ok = launch_ok
+        self.ensured: list[str] = []
+
+    def stage(self, run_id: str) -> str | None:
+        seen = self.stages[run_id]
+        return seen.pop(0) if len(seen) > 1 else seen[0]
+
+    def ensure(self, run_id: str) -> tuple[bool, str]:
+        self.ensured.append(run_id)
+        return self.launch_ok, "relaunched" if self.launch_ok else "refused (not received)"
+
+
+def _followed(tmp_path: Path, lens: StubLens, clock: Clock) -> Queue:
+    fake = FakeYield({"r1": [status("attacking", 4), status("complete", 10)]})
+    policy = Policy(lens_wait=timedelta(minutes=10))
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), policy=policy, clock=clock)
+    queue.lens = lens
+    return queue
+
+
+def test_a_complete_run_waits_for_its_lens_result(tmp_path: Path) -> None:
+    lens = StubLens({"r1": ["accepted", "running", "done"]})
+    clock = Clock(step=timedelta(minutes=1))
+    queue = _followed(tmp_path, lens, clock)
+    state = _run(queue, clock)
+    assert state.entry("r1").lens == "done"
+    assert lens.ensured == []
+
+
+def test_a_lens_result_late_past_the_bound_is_launched_once(tmp_path: Path) -> None:
+    lens = StubLens({"r1": ["accepted"]})
+    clock = Clock(step=timedelta(minutes=3))
+    queue = _followed(tmp_path, lens, clock)
+    state = _run(queue, clock)
+    assert state.done
+    assert state.entry("r1").lens == "launched"
+    assert lens.ensured == ["r1"]
+    assert any(e.kind == "lens_launched" for e in queue.store.events())
+
+
+def test_a_lens_launch_that_cannot_happen_is_an_error(tmp_path: Path) -> None:
+    lens = StubLens({"r1": [None]}, launch_ok=False)
+    clock = Clock(step=timedelta(minutes=3))
+    queue = _followed(tmp_path, lens, clock)
+    state = _run(queue, clock)
+    assert state.entry("r1").lens == "failed"
+    failed = next(e for e in queue.store.events() if e.kind == "lens_failed")
+    assert failed.severity == "error"

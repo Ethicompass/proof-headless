@@ -27,7 +27,10 @@ from proof_headless.bundle import manifest as bundles
 from proof_headless.bundle.manifest import BundleInvalid
 from proof_headless.console import err, out
 from proof_headless.docker import Compose
-from proof_headless.endpoints import YIELD_API, YIELD_COMPUTE
+from proof_headless.endpoints import LENS_API, YIELD_API, YIELD_COMPUTE
+from proof_headless.lens import commands as lens_commands
+from proof_headless.lens.api import LensApi
+from proof_headless.lens.ensure import Manual
 from proof_headless.models import manifest as manifests
 from proof_headless.models import render
 from proof_headless.models.manifest import ManifestInvalid
@@ -35,6 +38,7 @@ from proof_headless.runs import remeasure as remeasuring
 from proof_headless.runs.anomalies import Detector
 from proof_headless.runs.board import Board, Sampler, event_line, plain
 from proof_headless.runs.client import Unreachable, Yield, metric_outcomes
+from proof_headless.runs.lens_follow import LensFollower
 from proof_headless.runs.observe import STACK_PROJECT, JobContainers, Observation, Observer
 from proof_headless.runs.queue import Policy, Queue, new_state, read_specs
 from proof_headless.runs.state import (
@@ -113,7 +117,7 @@ def _report(event: Event) -> None:
 
 def _summary(state: QueueState) -> Table:
     table = Table(title=f"Runs for {state.client}", title_justify="left")
-    for column in ("run", "queue", "phase", "closed", "failed", "metrics", "error"):
+    for column in ("run", "queue", "phase", "closed", "failed", "metrics", "lens", "error"):
         table.add_column(column)
     for entry in state.runs:
         style = {RunState.COMPLETE: "ok"}.get(
@@ -126,6 +130,7 @@ def _summary(state: QueueState) -> Table:
             f"{entry.closed}/{entry.planned if entry.planned is not None else '?'}",
             str(entry.failed),
             ", ".join(f"{m} {s}" for m, s in entry.metrics.items()),
+            entry.lens or "-",
             escape(entry.error or ""),
         )
     return table
@@ -153,8 +158,19 @@ def queue_command(
     api: str = ApiOption,
     compute: str = ComputeOption,
     manifest: Path | None = ManifestOption,
+    lens: str = typer.Option(LENS_API, "--lens", help="lens-api on this appliance."),
+    lens_wait_minutes: float = typer.Option(
+        10.0,
+        "--lens-wait-minutes",
+        min=0,
+        help="Minutes a complete run's Lens result may take before the queue launches Lens's job.",
+    ),
+    follow_lens: bool = typer.Option(
+        True, "--lens-follow/--no-lens-follow", help="Follow each complete run to Lens."
+    ),
 ) -> None:
-    """Submit the bundle's rendered specs to Yield and wait for every run to close."""
+    """Submit the bundle's rendered specs to Yield and wait for every run to close and, unless
+    --no-lens-follow, to reach Lens."""
     client_name = _client_of(directory)
     store = Store(state_dir(client_name))
     recorded = store.read()
@@ -186,8 +202,17 @@ def queue_command(
         concurrency=state.concurrency,
         retries=retries,
         stall_after=timedelta(minutes=stall_minutes),
+        lens_wait=timedelta(minutes=lens_wait_minutes),
     )
     client = _yield(api, compute)
+    follower = None
+    if follow_lens:
+        kills = state_dir(client_name) / "lens" / "kills"
+        follower = LensFollower(
+            api=LensApi(lens_commands.connect(lens, 60.0)),
+            client=client_name,
+            manual=Manual(lens_commands.runner, "fallback", kills=kills),
+        )
     observer = _observer(client, manifest)
     queue = Queue(
         client=client,
@@ -197,6 +222,7 @@ def queue_command(
         policy=policy,
         observe=observer,
         report=_report,
+        lens=follower,
     )
     try:
         with store.lock():

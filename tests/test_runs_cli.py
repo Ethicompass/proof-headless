@@ -15,6 +15,8 @@ from typer.testing import CliRunner
 
 from proof_headless.cli import app
 from proof_headless.docker import ServiceState
+from proof_headless.lens import commands as lens_commands
+from proof_headless.lens.runs import YieldRun
 from proof_headless.runs import commands
 from proof_headless.runs.board import Sampler, plain
 from proof_headless.runs.client import RunStatus
@@ -22,6 +24,7 @@ from proof_headless.runs.dashboard import WatchApp
 from proof_headless.runs.observe import JobContainers, Observation
 from proof_headless.runs.state import Event, RunState, Store, specs_dir, state_dir
 from tests.conftest import ROOT
+from tests.fake_lens import FakeLens
 from tests.fake_yield import HAPPY, FakeYield, job, status
 
 EXAMPLE = ROOT / "examples" / "bundle-acme"
@@ -82,7 +85,19 @@ def _docker(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
 
 
 @pytest.fixture
-def fake(monkeypatch: pytest.MonkeyPatch) -> FakeYield:
+def lens(monkeypatch: pytest.MonkeyPatch) -> FakeLens:
+    fake = FakeLens()
+    monkeypatch.setattr(lens_commands, "connect", lambda url, timeout: fake.client())
+    return fake
+
+
+def _lens_key(run: str) -> str:
+    derived = YieldRun(run, None)
+    return f"{derived.project_id}/{derived.lens_run_id}"
+
+
+@pytest.fixture
+def fake(monkeypatch: pytest.MonkeyPatch, lens: FakeLens) -> FakeYield:
     yielded = FakeYield({"r1": HAPPY, "r2": HAPPY})
     monkeypatch.setattr(commands, "_yield", lambda api, compute: yielded.client())
     monkeypatch.setattr(commands, "JobContainers", lambda: JobContainers(runner=_docker))
@@ -90,9 +105,11 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeYield:
     return yielded
 
 
-def test_queue_runs_every_spec_to_the_end(fake: FakeYield) -> None:
+def test_queue_runs_every_spec_to_the_end(fake: FakeYield, lens: FakeLens) -> None:
     _spec("r1")
     _spec("r2")
+    lens.put(_lens_key("r1"), "done")
+    lens.put(_lens_key("r2"), "done")
     result = runner.invoke(app, ["run", "queue", str(EXAMPLE), "--concurrency", "2"])
     assert result.exit_code == 0, result.output
     assert fake.posts == ["r1", "r2"]
@@ -105,6 +122,22 @@ def test_queue_runs_every_spec_to_the_end(fake: FakeYield) -> None:
     assert "anomaly.rate_limited" in kinds
     assert "anomaly.stack_down" in kinds
     assert "no_webhook" not in kinds
+    assert [entry.lens for entry in recorded.runs] == ["done", "done"]
+
+
+def test_queue_launches_lens_for_a_result_that_does_not_arrive(
+    fake: FakeYield, lens: FakeLens
+) -> None:
+    _spec("r1")
+    lens.put(_lens_key("r1"), "accepted")
+    result = runner.invoke(
+        app, ["run", "queue", str(EXAMPLE), "--only", "r1", "--lens-wait-minutes", "0"]
+    )
+    assert result.exit_code == 0, result.output
+    assert lens.relaunches == [_lens_key("r1")]
+    recorded = Store(state_dir("acme")).read()
+    assert recorded is not None
+    assert recorded.entry("r1").lens == "launched"
 
 
 def test_queue_refuses_to_start_over_an_unfinished_queue(fake: FakeYield) -> None:

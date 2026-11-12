@@ -120,7 +120,9 @@ posted again, and anything else is posted with the bytes Yield first accepted, w
 with 202 while a driver runs and relaunches when none does. A run Yield reads as failed is posted
 again (`--retries`, default 1) and keeps its slot until Yield shows the relaunched attempt. A run
 whose attack stops advancing for `--stall-minutes` is posted again up to twice, then closed as
-`stalled` so the queue ends. Its state is `queue.json` beside the specs, the accepted specs are
+`stalled` so the queue ends. Each complete run is then followed to Lens: when its result has not
+appeared within `--lens-wait-minutes` (default 10), the queue launches Lens's job once, as
+`proof lens run` would (`--no-lens-follow` ends the queue at Yield). Its state is `queue.json` beside the specs, the accepted specs are
 kept in `submitted/`, and everything it did, including the anomalies it found, is appended to
 `events.jsonl`:
 

@@ -106,6 +106,10 @@ class Entry(BaseModel):
     error: str | None = None
     metrics: dict[str, str] = Field(default_factory=dict)
     """Each metric's status in the run's manifest once it closed."""
+    lens: str | None = None
+    """Once complete, its Lens result: `waiting`, `done`, `launched` (the queue launched Lens's
+    job after the bound), or `failed` (nothing could be launched). `None` when not followed."""
+    lens_since: str | None = None
 
 
 class QueueState(BaseModel):
@@ -137,7 +141,8 @@ class QueueState(BaseModel):
 
     @property
     def done(self) -> bool:
-        return all(item.state in TERMINAL for item in self.runs)
+        """Every run closed, and no complete run still waiting for its Lens result."""
+        return all(item.state in TERMINAL and item.lens != "waiting" for item in self.runs)
 
     @property
     def succeeded(self) -> bool:

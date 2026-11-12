@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from proof_headless.lens.api import DONE, LensUnavailable
+from proof_headless.lens.runs import RunsUnknown
 from proof_headless.runs.anomalies import STALL_AFTER, Anomaly, Detector, signature
 from proof_headless.runs.client import (
     BEFORE_MEASURE,
@@ -40,6 +42,7 @@ from proof_headless.runs.client import (
     Yield,
     metric_outcomes,
 )
+from proof_headless.runs.lens_follow import FollowsLens
 from proof_headless.runs.observe import Observation
 from proof_headless.runs.state import (
     Entry,
@@ -62,6 +65,9 @@ class Policy:
     stall_resubmits: int = 2
     submit_attempts: int = 5
     """Submissions answered 503, or not answered, before the run is marked failed."""
+    lens_wait: timedelta = timedelta(minutes=10)
+    """How long a complete run's Lens result may take to appear on its own before the queue
+    launches Lens's job for it."""
     relaunch_grace: timedelta = timedelta(minutes=10)
     """How long after re-posting a failed run its `failed` may still be the old attempt's: the
     relaunched driver announces itself only once its container has booted."""
@@ -114,6 +120,8 @@ class Queue:
     the rules see the run statuses the queue just read."""
     report: Callable[[Event], None] = lambda event: None
     detector: Detector = field(default_factory=Detector)
+    lens: FollowsLens | None = None
+    """Follows each complete run to its Lens result; without one, the queue ends at Yield."""
     unreachable: bool = False
     """Whether Yield stopped answering, so an outage is logged when it starts and when it ends
     rather than on every poll."""
@@ -308,6 +316,9 @@ class Queue:
             manifest = None
         entry.metrics = metric_outcomes(manifest or {})
         self._close(entry, RunState.COMPLETE)
+        if self.lens is not None:
+            entry.lens = "waiting"
+            entry.lens_since = stamp(self.now())
 
     def _start(self, entry: Entry) -> None:
         """Adopt a run Yield is measuring or has closed; post anything else.
@@ -429,6 +440,41 @@ class Queue:
         elif status.phase in BEFORE_MEASURE:
             self._stalled(entry)
 
+    def _follow_lens(self) -> None:
+        """Mark each complete run's Lens result done when it appears, and launch Lens's job for
+        one that has not appeared within `lens_wait`, once."""
+        if self.lens is None:
+            return
+        for entry in self.state.runs:
+            if entry.lens != "waiting" or entry.lens_since is None:
+                continue
+            late = self.now() - parse(entry.lens_since) >= self.policy.lens_wait
+            try:
+                stage = self.lens.stage(entry.run_id)
+            except (LensUnavailable, RunsUnknown) as error:
+                if late:
+                    entry.lens = "failed"
+                    self.log(
+                        "lens_failed",
+                        f"Lens could not be read: {error}",
+                        severity=Severity.ERROR,
+                        run_id=entry.run_id,
+                    )
+                continue
+            if stage == DONE:
+                entry.lens = "done"
+                self.log("lens_done", "Lens has its result", run_id=entry.run_id)
+            elif late:
+                ok, what = self.lens.ensure(entry.run_id)
+                entry.lens = "launched" if ok else "failed"
+                self.log(
+                    "lens_launched" if ok else "lens_failed",
+                    f"no Lens result after {self.policy.lens_wait} "
+                    f"(stage {stage or 'not received'}); proof lens: {what}",
+                    severity=Severity.WARNING if ok else Severity.ERROR,
+                    run_id=entry.run_id,
+                )
+
     def _anomalies(self, statuses: dict[str, RunStatus | None]) -> list[Anomaly]:
         ids = list(dict.fromkeys([*statuses, *(e.run_id for e in self.state.active())]))
         if self.observe is not None:
@@ -460,6 +506,7 @@ class Queue:
             if self.unreachable:
                 self.unreachable = False
                 self.log("reachable", "Yield answers again", subject="yield")
+            self._follow_lens()
         except Unreachable as error:
             if not self.unreachable:
                 self.unreachable = True
