@@ -27,8 +27,8 @@ uv run proof --help
 | `proof bundle` | Validates and loads a client bundle (see `examples/bundle-acme`) | available |
 | `proof spec render` | Renders Yield run specs from a bundle's run matrix and role bindings | available |
 | `proof run` | Queues, watches and re-measures a matrix of runs | available |
-| `proof lens` | Makes sure every Yield run has its Lens result | planned (#8) |
-| `proof evidence` | Exports a checksummed evidence package | planned (#9) |
+| `proof lens` | Makes sure every Yield run has its Lens result | available |
+| `proof evidence` | Exports a checksummed evidence package | available |
 
 ## Serve the models
 
@@ -52,6 +52,50 @@ report under `$PROOF_HOME/evidence/`.
 
 Each model is reachable from other containers as `http://<name>:8000/v1` on the
 `proof-models` network, and from the host on `127.0.0.1:<port>` only.
+
+## Lens results
+
+Every finished Yield run should end with a Lens result. `proof lens status <client>` lists the
+client's runs (from the queue state, else the rendered specs), the Lens project and run each
+delivery derives (`decl-<first 20 hex of the declaration>`, the Yield run id), whether Lens
+received and admitted it, its stage and its result. It exits non-zero while any run has none.
+
+```sh
+proof lens status acme
+proof lens run acme             # every run of the client without a result
+proof lens run acme <run-id>    # one run
+```
+
+`proof lens run` launches only an admitted run with no result and no live job, so running it twice
+is harmless. It asks lens-api to relaunch first (`POST /projects/{p}/runs/{r}/launch`); when that
+cannot launch, it starts `lens-run` by hand with the environment the running lens-api container
+gives its jobs, through a 0600 env file deleted right after (`--manual` skips the relaunch,
+`--no-fallback` forbids the hand launch). A relaunch Lens refuses (404, 409) is reported and never
+launched by hand; a lens-api without the relaunch route says so and points at `--manual`. The hand
+launch uses lens-api's `LENS_DOCKER_NETWORK`, as its dispatcher does. A
+dead container holding the run's name is recorded first (exit code, last log lines with every
+environment value of 8 or more characters redacted) under
+`$PROOF_HOME/bundles/<client>/lens/kills/`, then removed. It then waits for the result
+(`--timeout`).
+
+## Export the evidence
+
+```sh
+proof evidence export acme              # to $PROOF_HOME/exports/acme-<time>
+proof evidence verify <package-dir>     # or: cd <package-dir> && sha256sum -c SHA256SUMS
+```
+
+The package holds the bundle's receipt and rendered specs, the models manifest and compose file,
+`appliance.lock` when present, every running container's image digests, what each model server
+reports at `/version`, the doctor's reports, and per run Yield's status and manifest, the run's
+objects in Yield's store (traces, dataset) and the Lens result. Its README lists the layout and
+every gap. The store is read over its S3 API with `YIELD_S3_ACCESS_KEY` and `YIELD_S3_SECRET_KEY`
+from the secrets file; without them the traces are a recorded gap. The export is refused, and
+nothing is written, when any value of the secrets file appears in any file, as written,
+JSON-escaped, percent-encoded or base64-encoded; zstd traces are scanned decompressed, and one that
+does not decompress refuses the package too. The refusal names the file and the secret, never the
+value. Values shorter than 8 characters are too short to match without refusing ordinary text:
+they are not looked for, and the export names those secrets on stderr and in `index.json`.
 
 Read commands take `--json`. Results go to standard output, and messages for the operator go to
 standard error.
