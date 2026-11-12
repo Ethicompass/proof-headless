@@ -30,6 +30,9 @@ def test_an_absent_file_defines_nothing(tmp_path: Path) -> None:
 
 def test_a_name_with_an_empty_value_is_not_defined(tmp_path: Path) -> None:
     path = tmp_path / "secrets.env"
-    path.write_text("HF_TOKEN= # paste here\nQUOTED=''\nEMPTY=\nHASHED='a #b'\nTARGET_KEY=x # ok\n")
+    path.write_text(
+        "HF_TOKEN= # paste here\nQUOTED='' # x\nDOUBLE=\"\" # note\nEMPTY=\n"
+        "HASHED='a #b'\nTARGET_KEY=x # ok\n"
+    )
     path.chmod(0o600)
     assert names(path) == {"HASHED", "TARGET_KEY"}
