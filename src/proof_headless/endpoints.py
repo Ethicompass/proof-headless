@@ -1,27 +1,22 @@
-"""Where the appliance's own services are, in one place.
+"""Where the stack's services answer: from the host, and from a container on the stack's networks.
 
-Two kinds of address. The in-network ones are how one container of the stack reaches another on
-the `proof-stack` network; they go into what a container reads, such as a run spec's
-`webhook_url`. The loopback ones are how `proof` on the host reaches the stack's published ports.
-Both are the appliance's own (ADR 0001 lets defaults name them), never a client's, and `proof stack`
-renders the services these name, so a change here and a change there are one change.
+One module so a URL the stack renders and a URL a command calls cannot drift apart. The host URLs
+are loopback, because every port the stack publishes binds 127.0.0.1. The in-network ones are what
+a spec or a setting names, for a container to reach (`proof stack` puts `lens-api`, `yield-minio`
+and `brain-registry` on the shared network).
 """
 
 from __future__ import annotations
 
-STACK_PROJECT = "proof-stack"
-"""The compose project `proof stack` brings up."""
-
-LENS_WEBHOOK = "http://lens-api:8080/webhooks/yield"
-"""Where Yield's measure delivers a run's results: Lens's receiver, as a job container on the
-`proof-stack` network reaches it. A spec without a `webhook_url` is measured and delivered
-nowhere, and its raw outputs stay in Yield's bucket."""
-
 YIELD_API = "http://127.0.0.1:8080"
-"""Yield's API from the host."""
-
 YIELD_COMPUTE = "http://127.0.0.1:8081"
-"""Yield compute from the host."""
-
 LENS_API = "http://127.0.0.1:8090"
-"""Lens's API from the host."""
+BRAIN_REGISTRY = "localhost:5051"
+"""Where vitruvio pushes a brain from the host, over plain HTTP."""
+
+YIELD_COMPUTE_IN_NETWORK = "http://yield-compute:8080"
+LENS_API_IN_NETWORK = "http://lens-api:8080"
+LENS_WEBHOOK = f"{LENS_API_IN_NETWORK}/webhooks/yield"
+"""A run's `webhook_url`: Yield's measurement job posts its delivery to Lens by name."""
+BRAIN_REGISTRY_IN_NETWORK = "brain-registry:5000"
+"""The registry a run's `kb_ref` names; the same digests as `BRAIN_REGISTRY`."""
