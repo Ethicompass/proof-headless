@@ -20,6 +20,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,19 @@ import httpx
 from proof_headless.bundle.manifest import Brain, Bundle, Catalogue
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+
+
+class Piece(StrEnum):
+    """The kinds of piece a receipt names. A `StrEnum`, so the receipt's JSON keeps plain strings
+    while every reader and writer spells the kind once: a typo is a type error, not a piece
+    reported missing."""
+
+    CATALOGUE = "catalogue"
+    PROFILE = "profile"
+    PRIOR = "prior"
+    MAPPING = "mapping"
+    BRAIN = "brain"
+    DECLARATION = "declaration"
 
 
 @dataclass(frozen=True)
@@ -126,7 +140,7 @@ def push_brain(brain: Brain, registry: str, runner: Runner, *, insecure: bool | 
     digest = data.get("digest") if isinstance(data, dict) else None
     if not digest:
         raise LoadFailed(f"brain {brain.name}: vitruvio's answer carries no digest")
-    return Loaded("brain", brain.name, digest=str(digest))
+    return Loaded(Piece.BRAIN, brain.name, digest=str(digest))
 
 
 def load(
@@ -151,7 +165,7 @@ def load(
     """
     receipt = Receipt(client=bundle.client)
 
-    def published(kind: str, name: str, answer: dict[str, Any]) -> None:
+    def published(kind: Piece, name: str, answer: dict[str, Any]) -> None:
         receipt.loaded.append(
             Loaded(kind, name, answer.get("version"), answer.get("digest"), answer.get("created"))
         )
@@ -162,26 +176,31 @@ def load(
             what = f"catalogue {catalogue.name}"
             route = f"/catalogues?contract={catalogue.contract}"
             published(
-                "catalogue", catalogue.name, _post(client, route, catalogue_body(catalogue), what)
+                Piece.CATALOGUE,
+                catalogue.name,
+                _post(client, route, catalogue_body(catalogue), what),
             )
         for entry in bundle.profiles:
             progress(f"profile {entry.name}")
             body = {"name": entry.name, "profile": json.loads(entry.path.read_text())}
             published(
-                "profile", entry.name, _post(client, "/profiles", body, f"profile {entry.name}")
+                Piece.PROFILE, entry.name, _post(client, "/profiles", body, f"profile {entry.name}")
             )
         for entry in bundle.priors:
             progress(f"prior {entry.name}")
             body = {"name": entry.name, "phrasings": json.loads(entry.path.read_text())}
-            published("prior", entry.name, _post(client, "/priors", body, f"prior {entry.name}"))
+            published(
+                Piece.PRIOR, entry.name, _post(client, "/priors", body, f"prior {entry.name}")
+            )
         for entry in bundle.mappings:
             progress(f"mapping {entry.name}")
             body = {"name": entry.name, "mapping": json.loads(entry.path.read_text())}
             published(
-                "mapping", entry.name, _post(client, "/mappings", body, f"mapping {entry.name}")
+                Piece.MAPPING, entry.name, _post(client, "/mappings", body, f"mapping {entry.name}")
             )
         if skip_brains:
-            kept = {i.name: i for i in (previous.loaded if previous else []) if i.kind == "brain"}
+            earlier = previous.loaded if previous else []
+            kept = {i.name: i for i in earlier if i.kind == Piece.BRAIN}
             for brain in bundle.brains:
                 last = kept.get(brain.name)
                 if last is None or not last.digest:
@@ -189,7 +208,8 @@ def load(
                         f"brain {brain.name}: --skip-brains needs a digest from an earlier load, "
                         f"and there is none; load once without --skip-brains"
                     )
-                receipt.loaded.append(Loaded("brain", brain.name, digest=last.digest, carried=True))
+                carried = Loaded(Piece.BRAIN, brain.name, digest=last.digest, carried=True)
+                receipt.loaded.append(carried)
         else:
             for brain in bundle.brains:
                 progress(f"brain {brain.name}")
@@ -199,7 +219,7 @@ def load(
             progress(f"declaration {declaration.path.name[:12]}")
             shutil.copyfile(declaration.path, declarations_dir / declaration.path.name)
             digest = f"sha256:{declaration.path.name}"
-            receipt.loaded.append(Loaded("declaration", declaration.path.name, digest=digest))
+            receipt.loaded.append(Loaded(Piece.DECLARATION, declaration.path.name, digest=digest))
     except LoadFailed as error:
         receipt.error = str(error)
         reached = {(item.kind, item.name) for item in receipt.loaded}
@@ -216,12 +236,12 @@ def load(
 
 def _declared(bundle: Bundle) -> set[tuple[str, str]]:
     """Every piece the bundle declares now, as the receipt names them."""
-    pieces = {("catalogue", c.name) for c in bundle.catalogues}
-    pieces |= {("profile", e.name) for e in bundle.profiles}
-    pieces |= {("prior", e.name) for e in bundle.priors}
-    pieces |= {("mapping", e.name) for e in bundle.mappings}
-    pieces |= {("brain", b.name) for b in bundle.brains}
-    pieces |= {("declaration", d.path.name) for d in bundle.declarations}
+    pieces: set[tuple[str, str]] = {(Piece.CATALOGUE, c.name) for c in bundle.catalogues}
+    pieces |= {(Piece.PROFILE, e.name) for e in bundle.profiles}
+    pieces |= {(Piece.PRIOR, e.name) for e in bundle.priors}
+    pieces |= {(Piece.MAPPING, e.name) for e in bundle.mappings}
+    pieces |= {(Piece.BRAIN, b.name) for b in bundle.brains}
+    pieces |= {(Piece.DECLARATION, d.path.name) for d in bundle.declarations}
     return pieces
 
 

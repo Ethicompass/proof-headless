@@ -25,7 +25,7 @@ uv run proof --help
 | `proof doctor` | Probes every served model the way runs use it | available (models; stack probes come with #4) |
 | `proof stack` | Brings up Yield, Lens and the brain registry from pinned images | planned (#4) |
 | `proof bundle` | Validates and loads a client bundle (see `examples/bundle-acme`) | available |
-| `proof spec render` | Renders Yield run specs from a run matrix and the model roles | planned (#6) |
+| `proof spec render` | Renders Yield run specs from a bundle's run matrix and role bindings | available |
 | `proof run` | Queues, watches and re-measures a matrix of runs | planned (#7) |
 | `proof lens` | Makes sure every Yield run has its Lens result | planned (#8) |
 | `proof evidence` | Exports a checksummed evidence package | planned (#9) |
