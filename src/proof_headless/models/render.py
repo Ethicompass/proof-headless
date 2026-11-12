@@ -41,10 +41,16 @@ def command(model: ModelEntry) -> list[str]:
 
 
 def service(model: ModelEntry, manifest: Manifest) -> dict[str, Any]:
-    """One model's compose service."""
+    """One model's compose service.
+
+    A gated model's token is `${HF_TOKEN:-}`, not `${HF_TOKEN:?}`: compose resolves every variable
+    of the file on every command, so a required one would also refuse `ps`, `logs` and `down`, and
+    an operator with no token could not stop the models. `proof models up` refuses a gated model
+    without the token itself, before compose is called.
+    """
     environment: dict[str, str] = {"HF_HOME": CACHE_IN_CONTAINER}
     if model.gated:
-        environment["HF_TOKEN"] = "${HF_TOKEN:?HF_TOKEN must be set in the secrets file}"
+        environment["HF_TOKEN"] = "${HF_TOKEN:-}"
     volumes = [f"{manifest.hf_cache.expanduser()}:{CACHE_IN_CONTAINER}"]
     volumes += [f"{mount.source}:{mount.target}:ro" for mount in model.mounts]
     return {

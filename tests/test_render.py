@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+import pytest
+import yaml
+
 from proof_headless.models import render
 from proof_headless.models.manifest import load
 from tests.conftest import SPARK_MANIFEST
@@ -36,9 +42,9 @@ def test_the_command_puts_proof_s_flags_first_and_the_manifest_s_verbatim_after(
     assert command[9:] == list(chat.args)
 
 
-def test_only_a_gated_model_asks_compose_for_the_token_and_refuses_to_start_without_it() -> None:
+def test_only_a_gated_model_gets_the_token_and_its_absence_does_not_break_compose() -> None:
     document = render.compose(load(SPARK_MANIFEST))
-    assert document["services"]["guardian"]["environment"]["HF_TOKEN"].startswith("${HF_TOKEN:?")
+    assert document["services"]["guardian"]["environment"]["HF_TOKEN"] == "${HF_TOKEN:-}"
     assert "HF_TOKEN" not in document["services"]["chat"]["environment"]
 
 
@@ -50,3 +56,19 @@ def test_the_health_check_waits_out_the_declared_load_time_and_the_gpu_is_reserv
     )
     devices = service["deploy"]["resources"]["reservations"]["devices"]
     assert devices == [{"driver": "nvidia", "count": "all", "capabilities": ["gpu"]}]
+
+
+GOLDEN = Path(__file__).parent / "golden" / "dgx-spark-compose.yaml"
+
+
+def test_the_spark_manifest_renders_the_reviewed_compose_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole document, against a reviewed copy: a change to what the models run with shows up
+    as a diff of this file. `UPDATE_GOLDEN=1` rewrites it."""
+    monkeypatch.setenv("HOME", "/home/operator")
+    rendered = yaml.safe_dump(render.compose(load(SPARK_MANIFEST)), sort_keys=False)
+    if os.environ.get("UPDATE_GOLDEN"):
+        GOLDEN.parent.mkdir(exist_ok=True)
+        GOLDEN.write_text(rendered)
+    assert rendered == GOLDEN.read_text()
