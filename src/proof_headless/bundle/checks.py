@@ -79,10 +79,13 @@ def check(bundle: Bundle, secret_names: frozenset[str]) -> list[Problem]:
     """Every problem found, in manifest order; empty means the bundle may be loaded."""
     problems: list[Problem] = []
     for where, path in _paths(bundle):
-        inside = [path, *sorted(path.rglob("*"))] if path.is_dir() else [path]
-        for item in inside:
-            if not item.resolve().is_relative_to(bundle.root):
-                problems.append(Problem(where, f"{item} resolves outside the bundle"))
+        if not path.resolve().is_relative_to(bundle.root):
+            problems.append(Problem(where, f"{path} is outside the bundle"))
+            continue
+        if path.is_dir():
+            for item in sorted(path.rglob("*")):
+                if not item.resolve().is_relative_to(bundle.root):
+                    problems.append(Problem(where, f"{item} resolves outside the bundle"))
     for entry in bundle.catalogues:
         where = f"catalogue {entry.name}"
         if not entry.path.is_dir():

@@ -304,3 +304,27 @@ def test_the_cli_writes_the_receipt_and_exits_1_when_the_load_stops(
     document = json.loads(commands.receipt_path(load(bundle_dir)).read_text())
     assert document["complete"] is False
     assert [item["kind"] for item in document["loaded"]] == ["catalogue", "profile", "prior"]
+
+
+def test_a_stopped_load_does_not_carry_pieces_the_bundle_no_longer_declares(
+    bundle_dir: Path, tmp_path: Path
+) -> None:
+    first = _load(bundle_dir, FakeCompute(), tmp_path)
+    stale = loader.Loaded("prior", "retired-phrasings", version=3)
+    first.loaded.append(stale)
+    stopped = _load(bundle_dir, FakeCompute(refuse="/priors"), tmp_path, previous=first)
+    assert ("prior", "retired-phrasings") not in {(i.kind, i.name) for i in stopped.loaded}
+
+
+def test_a_directory_outside_the_bundle_is_one_problem(bundle_dir: Path, tmp_path: Path) -> None:
+    elsewhere = tmp_path / "catalogue-elsewhere"
+    elsewhere.mkdir()
+    for n in range(5):
+        (elsewhere / f"f{n}.json").write_text("{}")
+    manifest = bundle_dir / "bundle.toml"
+    manifest.write_text(
+        manifest.read_text().replace("catalogues/acme-support", "../catalogue-elsewhere")
+    )
+    found = checks.check(load(bundle_dir), frozenset({"ACME_TARGET_KEY"}))
+    outside = [p for p in found if "outside the bundle" in p.what]
+    assert len(outside) == 1

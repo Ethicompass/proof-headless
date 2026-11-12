@@ -203,14 +203,26 @@ def load(
     except LoadFailed as error:
         receipt.error = str(error)
         reached = {(item.kind, item.name) for item in receipt.loaded}
+        declared = _declared(bundle)
         receipt.loaded += [
             replace(item, carried=True)
             for item in (previous.loaded if previous else [])
-            if (item.kind, item.name) not in reached
+            if (item.kind, item.name) not in reached and (item.kind, item.name) in declared
         ]
         return receipt
     receipt.complete = True
     return receipt
+
+
+def _declared(bundle: Bundle) -> set[tuple[str, str]]:
+    """Every piece the bundle declares now, as the receipt names them."""
+    pieces = {("catalogue", c.name) for c in bundle.catalogues}
+    pieces |= {("profile", e.name) for e in bundle.profiles}
+    pieces |= {("prior", e.name) for e in bundle.priors}
+    pieces |= {("mapping", e.name) for e in bundle.mappings}
+    pieces |= {("brain", b.name) for b in bundle.brains}
+    pieces |= {("declaration", d.path.name) for d in bundle.declarations}
+    return pieces
 
 
 def read_receipt(path: Path) -> Receipt | None:
