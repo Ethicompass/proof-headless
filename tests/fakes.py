@@ -33,6 +33,8 @@ class FakeCompose:
     ports: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     missing_networks: set[str] = field(default_factory=set)
     """Networks `docker network inspect` does not find, until `docker network create` makes one."""
+    volumes: set[str] = field(default_factory=set)
+    """Volumes `docker volume inspect` finds."""
     state: dict[str, dict[str, object]] = field(default_factory=dict)
     polls: dict[str, int] = field(default_factory=dict)
     calls: list[list[str]] = field(default_factory=list)
@@ -46,6 +48,9 @@ class FakeCompose:
             return subprocess.CompletedProcess(args, 0, stdout=count, stderr="")
         if args[:3] == ["docker", "network", "inspect"] and args[3] in self.missing_networks:
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="not found")
+        if args[:3] == ["docker", "volume", "inspect"]:
+            code = 0 if args[3] in self.volumes else 1
+            return subprocess.CompletedProcess(args, code, stdout="", stderr="")
         if args[:3] == ["docker", "network", "create"]:
             self.missing_networks.discard(args[3])
         if args[1] in {"network", "pull"}:

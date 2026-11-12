@@ -5,17 +5,18 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
 import yaml
 from typer.testing import CliRunner
 
-from proof_headless import paths
+from proof_headless import paths, secrets
 from proof_headless.cli import app
 from proof_headless.docker import Compose
 from proof_headless.models.manifest import load
-from proof_headless.stack import commands, render
+from proof_headless.stack import commands, credentials, render
 from proof_headless.stack import lock as locks
 from tests.conftest import EXAMPLE_BUNDLE, LOCK, SPARK_MANIFEST
 from tests.fakes import FakeCompose
@@ -193,6 +194,31 @@ def test_a_missing_lock_is_refused_with_how_to_make_one() -> None:
     result = runner.invoke(app, ["stack", "up", "--manifest", str(SPARK_MANIFEST)])
     assert result.exit_code == 2
     assert "proof stack pin" in _text(result.output)
+
+
+def test_up_generates_the_stack_s_credentials_once_into_the_secrets_file(
+    fake: FakeCompose,
+) -> None:
+    first = runner.invoke(app, ["stack", "up", *USE_LOCK])
+    assert first.exit_code == 0, first.output
+    path = paths.secrets_file()
+    held = secrets.values(path)
+    assert set(credentials.NAMES) <= set(held)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    text = commands.stack_file().read_text()
+    assert not any(held[name] in text for name in credentials.NAMES)
+    second = runner.invoke(app, ["stack", "up", *USE_LOCK])
+    assert second.exit_code == 0, second.output
+    assert secrets.values(path) == held
+
+
+def test_up_refuses_a_store_started_with_credentials_the_file_lacks(fake: FakeCompose) -> None:
+    fake.volumes.add("proof-stack_lens_minio")
+    result = runner.invoke(app, ["stack", "up", *USE_LOCK])
+    assert result.exit_code == 2
+    assert "docker volume rm proof-stack_lens_minio" in _text(result.output)
+    assert not commands.stack_file().exists()
+    assert not paths.secrets_file().exists()
 
 
 def _secrets(text: str) -> None:

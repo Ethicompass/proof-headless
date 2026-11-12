@@ -7,8 +7,8 @@ services:
     - 127.0.0.1:9000:9000
     - 127.0.0.1:9001:9001
     environment:
-      MINIO_ROOT_USER: ${YIELD_S3_ACCESS_KEY:-yieldadmin}
-      MINIO_ROOT_PASSWORD: ${YIELD_S3_SECRET_KEY:-yieldadmin}
+      MINIO_ROOT_USER: ${YIELD_S3_ACCESS_KEY:?run proof stack up to generate it}
+      MINIO_ROOT_PASSWORD: ${YIELD_S3_SECRET_KEY:?run proof stack up to generate it}
     volumes:
     - yield_minio:/data
     networks:
@@ -32,9 +32,9 @@ services:
     entrypoint:
     - /bin/sh
     - -c
-    - mc alias set local http://yield-minio:9000 ${YIELD_S3_ACCESS_KEY:-yieldadmin}
-      ${YIELD_S3_SECRET_KEY:-yieldadmin} && mc mb --ignore-existing local/yield &&
-      mc mb --ignore-existing local/yield-results
+    - mc alias set local http://yield-minio:9000 ${YIELD_S3_ACCESS_KEY:?run proof
+      stack up to generate it} ${YIELD_S3_SECRET_KEY:?run proof stack up to generate
+      it} && mc mb --ignore-existing local/yield && mc mb --ignore-existing local/yield-results
     networks:
     - proof-yield
   yield-valkey:
@@ -66,8 +66,8 @@ services:
       YIELD_STORE_BACKEND: s3
       YIELD_S3_ENDPOINT: http://yield-minio:9000
       YIELD_S3_BUCKET: yield
-      YIELD_S3_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:-yieldadmin}
-      YIELD_S3_SECRET_KEY: ${YIELD_S3_SECRET_KEY:-yieldadmin}
+      YIELD_S3_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:?run proof stack up to generate it}
+      YIELD_S3_SECRET_KEY: ${YIELD_S3_SECRET_KEY:?run proof stack up to generate it}
       YIELD_JOBS_BACKEND: valkey
       YIELD_JOBS_URL: redis://yield-valkey:6379/0
       YIELD_SECRETS_BACKEND: env
@@ -124,8 +124,8 @@ services:
       YIELD_STORE_BACKEND: s3
       YIELD_S3_ENDPOINT: http://yield-minio:9000
       YIELD_S3_BUCKET: yield
-      YIELD_S3_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:-yieldadmin}
-      YIELD_S3_SECRET_KEY: ${YIELD_S3_SECRET_KEY:-yieldadmin}
+      YIELD_S3_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:?run proof stack up to generate it}
+      YIELD_S3_SECRET_KEY: ${YIELD_S3_SECRET_KEY:?run proof stack up to generate it}
       YIELD_JOBS_BACKEND: valkey
       YIELD_JOBS_URL: redis://yield-valkey:6379/0
       YIELD_SECRETS_BACKEND: env
@@ -157,8 +157,8 @@ services:
     - 127.0.0.1:9100:9000
     - 127.0.0.1:9101:9001
     environment:
-      MINIO_ROOT_USER: ${LENS_S3_ACCESS_KEY:-lensadmin}
-      MINIO_ROOT_PASSWORD: ${LENS_S3_SECRET_KEY:-lensadmin}
+      MINIO_ROOT_USER: ${LENS_S3_ACCESS_KEY:?run proof stack up to generate it}
+      MINIO_ROOT_PASSWORD: ${LENS_S3_SECRET_KEY:?run proof stack up to generate it}
     volumes:
     - lens_minio:/data
     networks:
@@ -181,7 +181,8 @@ services:
     entrypoint:
     - /bin/sh
     - -c
-    - mc alias set local http://lens-minio:9000 ${LENS_S3_ACCESS_KEY:-lensadmin} ${LENS_S3_SECRET_KEY:-lensadmin}
+    - mc alias set local http://lens-minio:9000 ${LENS_S3_ACCESS_KEY:?run proof stack
+      up to generate it} ${LENS_S3_SECRET_KEY:?run proof stack up to generate it}
       && mc mb --ignore-existing local/lens && mc mb --ignore-existing local/lens-events
     networks:
     - proof-lens
@@ -229,18 +230,21 @@ services:
       LENS_PUBLIC_BASE_URL: http://localhost:8090
       LENS_S3_ENDPOINT: http://lens-minio:9000
       LENS_S3_BUCKET: lens
-      LENS_S3_ACCESS_KEY: ${LENS_S3_ACCESS_KEY:-lensadmin}
-      LENS_S3_SECRET_KEY: ${LENS_S3_SECRET_KEY:-lensadmin}
+      LENS_S3_ACCESS_KEY: ${LENS_S3_ACCESS_KEY:?run proof stack up to generate it}
+      LENS_S3_SECRET_KEY: ${LENS_S3_SECRET_KEY:?run proof stack up to generate it}
       LENS_DEFAULT_JUDGE_CALIBRATION_REF: sha256:831448f5cf5b72fd4cd045913e93b8993c3a823efb655eaea66c7e0aee055d2f
       LENS_DEFAULT_RULES_REF: sha256:db1eeb942b11c1acfb8821c67f7971141af5a0195bc79111accbb784a9462b3f
       LENS_DEFAULT_CONTRACT_REF: sha256:8e9c1e6b8de6ec84e50dc47c0669da7c12d331c2c93f573b4c03c0c7c9b73876
       LENS_WEBHOOK_SIGNING_SECRET_REF: LENS_WEBHOOK_SIGNING_SECRET
-      LENS_WEBHOOK_SIGNING_SECRET: ${LENS_WEBHOOK_SIGNING_SECRET:-lens-local-signing-secret}
+      LENS_WEBHOOK_SIGNING_SECRET: ${LENS_WEBHOOK_SIGNING_SECRET:?run proof stack
+        up to generate it}
       LENS_YIELD_STORE_ENABLED: 'true'
       LENS_YIELD_STORE_ENDPOINT: http://yield-minio:9000
       LENS_YIELD_STORE_BUCKET: yield
-      LENS_YIELD_STORE_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:-yieldadmin}
-      LENS_YIELD_STORE_SECRET_KEY: ${YIELD_S3_SECRET_KEY:-yieldadmin}
+      LENS_YIELD_STORE_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:?run proof stack up to generate
+        it}
+      LENS_YIELD_STORE_SECRET_KEY: ${YIELD_S3_SECRET_KEY:?run proof stack up to generate
+        it}
       LENS_DECLARATION_SOURCE: http
       LENS_DECLARATION_SOURCE_URL: http://lens-declarations:8080
       LENS_MODEL_READER_PROVIDER: openai_compatible
