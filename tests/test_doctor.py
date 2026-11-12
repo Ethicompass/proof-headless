@@ -71,7 +71,7 @@ def test_the_judge_s_requests_ask_for_twenty_alternatives_with_reasoning_off(
         ("guardian", {"guard": "I cannot help with that"}, "guardian verdict"),
         ("guardian", {"always_safe": True}, "guardian verdict"),
         ("chat", {"reasoning_eats_budget": True}, "chat completion"),
-        ("embed", {"drift": 0.5}, "embeddings"),
+        ("embed", {"same_text_cosine": 0.99}, "embeddings"),
         ("rerank", {"relevant_first": False}, "rerank"),
     ],
 )
@@ -86,6 +86,17 @@ def test_each_flaw_fails_its_probe_and_the_exit_code(
     assert outcomes[(model, probe)]["ok"] is False
     failed = [key for key, value in outcomes.items() if not value["ok"]]
     assert failed == [(model, probe)]
+
+
+def test_the_embedder_probe_allows_the_batch_noise_measured_on_the_appliance(
+    servers: dict[str, FakeVllm],
+) -> None:
+    """0.9996 is what one text gave twice in one batch on the DGX Spark, below the old floor."""
+    servers["embed"].same_text_cosine = 0.9996
+    result = runner.invoke(app, ["doctor", *MANIFEST, "--only", "embed", "--json"])
+    assert result.exit_code == 0, result.output
+    data = _results(result.stdout)[("embed", "embeddings")]["data"]
+    assert data["cosine"] == pytest.approx(0.9996)  # type: ignore[index]
 
 
 def test_a_model_that_is_down_is_a_failed_probe_not_a_crash(servers: dict[str, FakeVllm]) -> None:

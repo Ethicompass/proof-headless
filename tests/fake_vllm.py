@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,8 +23,8 @@ class FakeVllm:
     """What the guard answers to everything; `None` answers like Llama Guard."""
     always_safe: bool = False
     reasoning_eats_budget: bool = False
-    drift: float = 0.0
-    """Added to the last vector's first component, so the same text no longer embeds the same."""
+    same_text_cosine: float = 1.0
+    """The cosine between the first and the last vector, which embed the same text."""
     relevant_first: bool = True
     status: int = 200
     seen: list[dict[str, Any]] = field(default_factory=list)
@@ -35,8 +36,11 @@ class FakeVllm:
         self.seen.append({"path": request.url.path, **body})
         path = request.url.path
         if path == "/v1/embeddings":
-            vectors = [[float(len(text)), 1.0, 0.5] for text in body["input"]]
-            vectors[-1][0] += self.drift * 100
+            vectors = [[float(len(text)), 1.0, 0.0] for text in body["input"]]
+            first = vectors[0]
+            norm = math.hypot(*first)
+            tilt = math.sqrt(1.0 - self.same_text_cosine**2) * norm
+            vectors[-1] = [first[0] * self.same_text_cosine, self.same_text_cosine, tilt]
             return httpx.Response(200, json={"data": [{"embedding": v} for v in vectors]})
         if path == "/v1/rerank":
             high, low = (-1.8, -9.2) if self.relevant_first else (-9.2, -1.8)

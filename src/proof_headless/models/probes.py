@@ -47,9 +47,12 @@ everything passes the benign half of the probe and fails this one."""
 CATEGORY = re.compile(r"\bS\d{1,2}\b")
 """A Llama Guard hazard category as the model writes it after `unsafe` (`S1`, ..., `S14`)."""
 
-SAME_TEXT_COSINE = 0.9999
+SAME_TEXT_COSINE = 0.999
 """Batched GPU kernels are not bit-exact across positions in a batch, so the same text embeds to
-vectors this close rather than necessarily equal ones."""
+vectors this close rather than necessarily equal ones. Measured on the DGX Spark with
+nvidia/Nemotron-3.5-Embed-1B-BF16 on vLLM 0.32.0, the same text twice in one batch gave cosine
+0.99965 between its two 2048-dimensional vectors; an embedder that is actually broken lands far
+below this floor."""
 
 
 @dataclass(frozen=True)
