@@ -21,6 +21,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from proof_headless.docker import Runner
 from proof_headless.lens import launcher
@@ -52,6 +53,8 @@ class Manual:
     api_container: str | None = None
     image: str | None = None
     network: str | None = None
+    kills: Path | None = None
+    """Where a dead container's record is kept before it is removed."""
 
 
 @dataclass(frozen=True)
@@ -86,12 +89,16 @@ def _launch(lens: LensApi, run: YieldRun, manual: Manual, outcome: Outcome) -> b
             run_id,
             image=manual.image,
             network=manual.network,
+            kills=manual.kills,
         )
     except launcher.LaunchRefused as error:
         outcome.action, outcome.detail = "refused", str(error)
         return False
-    if launched.replaced is not None:
-        outcome.steps.append(f"removed the dead {launched.container} (exit {launched.replaced})")
+    if launched.record is not None:
+        outcome.steps.append(
+            f"removed the dead {launched.container} (exit {launched.replaced}); its record is "
+            f"kept at {launched.record}"
+        )
     outcome.steps.append(f"manual launch: {launched.launch} {launched.container}")
     outcome.action = launched.launch
     return True

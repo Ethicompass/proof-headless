@@ -128,7 +128,9 @@ def run(
         None, "--image", help="The lens-run image. Default: lens-api's LENS_RUN_IMAGE."
     ),
     network: str | None = typer.Option(
-        None, "--network", help="The job's network. Default: lens-api's, as its dispatcher uses."
+        None,
+        "--network",
+        help="The job's network. Default: LENS_DOCKER_NETWORK, as lens-api's dispatcher uses.",
     ),
     timeout: float = typer.Option(
         3600.0, "--timeout", help="Seconds to wait for each result; 0 launches without waiting."
@@ -144,7 +146,8 @@ def run(
         raise _refuse("--manual and --no-fallback leave no way to launch")
     chosen = _runs(client, run_ids or [])
     mode = "only" if manual else ("fallback" if fallback else "never")
-    how = Manual(runner, mode, api_container, image, network)
+    kills = yield_runs.state_dir(client) / "lens" / "kills"
+    how = Manual(runner, mode, api_container, image, network, kills)
     waiting = Waiting(timeout=timeout, interval=interval)
     outcomes: list[Outcome] = []
     try:

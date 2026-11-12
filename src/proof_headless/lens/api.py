@@ -108,15 +108,26 @@ class LensApi:
         return Status.of(self._json(response, what))
 
     def relaunch(self, project_id: str, run_id: str) -> tuple[str, str | None]:
-        """Ask lens-api to launch the run again: `(launch, reason)` as it answered, where `launch`
-        is `launched`, `already_running`, `not_delivered`, `upstream_failed` or `launch_failed`."""
+        """Ask lens-api to launch the run again: `(launch, reason)`.
+
+        `launch` is what lens-api answered (`launched`, `already_running`, `not_delivered`,
+        `upstream_failed`, or `launch_failed` with a 503), `launch_failed` when the route is
+        missing (405, a Lens older than ADR 0027), or `refused` for any other answer: a 404 (no
+        run under those ids), a 409 (the run is not admitted) or anything unexpected is Lens
+        declining the launch, and nobody launches past it.
+        """
         what = f"relaunch of {project_id}/{run_id}"
         response = self._send("POST", f"/projects/{project_id}/runs/{run_id}/launch")
         if response.status_code in (202, 503):
             answer = self._json(response, what)
             return str(answer.get("launch", "launch_failed")), answer.get("reason")
-        detail = response.text[:300]
-        return "launch_failed", f"Lens answered {response.status_code}: {detail}"
+        if response.status_code == 405:
+            return "launch_failed", "this lens-api has no relaunch route"
+        try:
+            detail = response.json().get("detail")
+        except (json.JSONDecodeError, AttributeError):
+            detail = None
+        return "refused", f"Lens answered {response.status_code}: {detail or response.text[:300]}"
 
     def artifact(self, digest: str) -> bytes:
         """The artifact stored under `digest`, as Lens serves it."""

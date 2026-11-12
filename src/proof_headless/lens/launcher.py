@@ -4,7 +4,16 @@ The fallback for when lens-api's own relaunch cannot start the job, which on the
 engagements meant `docker run ... lens-run run <project> <run>` typed by hand. The container is
 named, labelled and networked as lens-api names, labels and networks it (Lens
 `lens_dispatch.docker`), so the daemon's name uniqueness refuses a second job for one run whoever
-launches it, and Lens's status reads this container as its own.
+launches it, and Lens's status reads this container as its own. The network is
+`LENS_DOCKER_NETWORK` or none (docker's default bridge), and no host entry is added, exactly as
+the dispatcher creates it: a job this launch starts runs where lens-api's own would, so a hand
+launch that works says the dispatcher's would have too, and one that does not fails for the same
+reason. `--network` overrides it deliberately.
+
+A dead container under the run's name is what lens-api's next launch reads its exit and last lines
+from, then records as the dead attempt's failure (Lens ADR 0027) before it removes it. This
+launcher cannot write Lens's store, so it keeps the same record, redacted, in the client's state
+directory before removing the container, where the operator and `proof evidence` find it.
 
 The job's environment is lens-api's: every `LENS_` setting in the running lens-api container
 except the ones only the API reads (Lens `deps.API_ONLY`), and, under the `env` secrets backend,
@@ -22,8 +31,10 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Iterable, Iterator, Mapping
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from proof_headless.docker import Runner
@@ -46,8 +57,13 @@ API_ONLY = frozenset(
 )
 """The settings lens-api keeps back from the job it launches (Lens `deps.API_ONLY`)."""
 
-HOST_GATEWAY = "host.docker.internal"
-_ALIVE = frozenset({"running", "restarting", "paused", "created"})
+_ALIVE = frozenset({"running", "restarting", "paused"})
+CREATE_TO_START_S = 60.0
+"""How long a `created` container that never started counts as a launch in flight, as Lens's
+dispatcher bounds it (`lens_dispatch.docker.CREATE_TO_START_S`); older, it is a launch that died
+between its create and its start."""
+LOG_TAIL = 50
+"""The lines of a dead container kept with its record, as Lens keeps them (`LOG_TAIL`)."""
 
 
 class LaunchRefused(RuntimeError):
@@ -137,15 +153,12 @@ def forwarded(env: Mapping[str, str]) -> dict[str, str]:
 def read_api(runner: Runner, container: str) -> ApiEnvironment:
     """lens-api's environment, its run image and its job network, read with `docker inspect`.
 
-    The network is `LENS_DOCKER_NETWORK` when lens-api sets one, as its dispatcher uses; otherwise
-    the first network lens-api itself is on, so the job reaches the store and the models by the
-    names lens-api reaches them.
+    The network is `LENS_DOCKER_NETWORK`, the one its dispatcher creates jobs on, or none.
     """
     output = _call(runner, ["docker", "inspect", container], f"inspecting {container}")
     try:
         documents = json.loads(output)
         config = documents[0]["Config"]
-        networks = documents[0].get("NetworkSettings", {}).get("Networks") or {}
     except (json.JSONDecodeError, LookupError, TypeError, AttributeError):
         raise LaunchRefused(f"`docker inspect {container}` did not answer a container") from None
     env: dict[str, str] = {}
@@ -153,7 +166,7 @@ def read_api(runner: Runner, container: str) -> ApiEnvironment:
         name, separator, value = str(item).partition("=")
         if separator:
             env[name] = value
-    network = env.get("LENS_DOCKER_NETWORK") or next(iter(networks), None)
+    network = env.get("LENS_DOCKER_NETWORK") or None
     return ApiEnvironment(container, forwarded(env), env.get("LENS_RUN_IMAGE") or None, network)
 
 
@@ -181,22 +194,116 @@ def env_file(env: Mapping[str, str]) -> Iterator[Path]:
 @dataclass(frozen=True)
 class Launched:
     """What the manual launch did: `launched`, or `already_running` when a live container already
-    holds the run's name. `replaced` is the exit code of a dead container it removed first."""
+    holds the run's name. `replaced` is the exit code of a dead container it removed first, and
+    `record` where that container's kill record was kept."""
 
     launch: str
     container: str
     replaced: int | None = None
+    record: Path | None = None
 
 
-def container_state(runner: Runner, name: str) -> tuple[str, int] | None:
-    """`(status, exit code)` of the container named `name`, or `None` when there is none."""
-    result = runner(
-        ["docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", name]
-    )
+@dataclass(frozen=True)
+class Held:
+    """The container holding the run's name, as `docker inspect` describes its state."""
+
+    status: str
+    exit_code: int | None
+    oom_killed: bool
+    finished_at: str | None
+    created: float
+    """When it was created, as a timestamp; 0 when the daemon's answer does not read, which makes
+    a never-started container stale and removable rather than a name held forever."""
+
+    def alive(self, now: float) -> bool:
+        """A job is, or may still be, behind it."""
+        if self.status in _ALIVE:
+            return True
+        return self.status == "created" and now - self.created < CREATE_TO_START_S
+
+    @property
+    def how(self) -> str:
+        if self.status == "created":
+            return "created and never started"
+        if self.oom_killed:
+            return f"OOM-killed (exit {self.exit_code})"
+        return f"exited {self.exit_code}"
+
+
+def _moment(value: str) -> float:
+    """Docker's RFC 3339 time, nanoseconds and all, as a timestamp; 0 when it does not read."""
+    text = value.strip().replace("Z", "+00:00")
+    head, dot, rest = text.partition(".")
+    if dot:
+        digits = "".join(ch for ch in rest if ch.isdigit())
+        text = f"{head}.{digits[:6]}{rest[len(digits) :]}"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def container_state(runner: Runner, name: str) -> Held | None:
+    """The state of the container named `name`, or `None` when there is none. Only `.State` and
+    `.Created` are asked for: the container's configuration holds the job's environment."""
+    result = runner(["docker", "inspect", "--format", "{{json .State}}\t{{.Created}}", name])
     if result.returncode != 0:
         return None
-    status, _, code = result.stdout.strip().partition(" ")
-    return status, int(code or 0)
+    raw_state, _, created = result.stdout.strip().partition("\t")
+    try:
+        state = json.loads(raw_state)
+    except json.JSONDecodeError:
+        state = {}
+    code = state.get("ExitCode")
+    return Held(
+        status=str(state.get("Status", "")),
+        exit_code=int(code) if code is not None else None,
+        oom_killed=bool(state.get("OOMKilled")),
+        finished_at=state.get("FinishedAt") or None,
+        created=_moment(created),
+    )
+
+
+def keep_kill(
+    runner: Runner,
+    api: ApiEnvironment,
+    held: Held,
+    name: str,
+    project_id: str,
+    run_id: str,
+    directory: Path,
+) -> Path:
+    """Write the dead container's record, as Lens's `record_kill` writes it, under `directory`.
+
+    The log tail is redacted of every value of the job's environment before it is written, and the
+    file is readable only by its owner: the job is not supposed to log a secret, and this is not
+    where to find out it did.
+    """
+    logs = runner(["docker", "logs", "--tail", str(LOG_TAIL), name])
+    tail = (
+        redact((logs.stdout or "") + (logs.stderr or ""), api.env.values())
+        if logs.returncode == 0
+        else None
+    )
+    record = {
+        "project_id": project_id,
+        "run_id": run_id,
+        "container": name,
+        "error": f"lens-run killed by the runtime: {held.how}",
+        "exit_code": held.exit_code,
+        "oom_killed": held.oom_killed,
+        "finished_at": held.finished_at,
+        "log_tail": tail,
+        "recorded_by": "proof lens run, before removing the container",
+        "recorded_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    path = directory / f"{name}-{stamp}.json"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write(json.dumps(record, indent=2) + "\n")
+    return path
 
 
 def launch(
@@ -207,11 +314,14 @@ def launch(
     *,
     image: str | None = None,
     network: str | None = None,
+    kills: Path | None = None,
+    now: Callable[[], float] = time.time,
 ) -> Launched:
     """Start the run's `lens-run` container, detached, unless a live one already holds its name.
 
     A dead container under the name is the last attempt, kept by Lens for its diagnosis (ADR 0027);
-    it is removed so the name is free, and its exit code is returned so the operator still sees it.
+    its record is kept under `kills` first, then it is removed so the name is free. Without
+    `kills` a dead holder is refused rather than removed, since its record would be lost.
     """
     chosen_image = image or api.image
     if not chosen_image:
@@ -220,13 +330,18 @@ def launch(
         )
     name = container_name(project_id, run_id)
     replaced: int | None = None
+    record: Path | None = None
     held = container_state(runner, name)
     if held is not None:
-        status, code = held
-        if status in _ALIVE:
+        if held.alive(now()):
             return Launched("already_running", name)
+        if kills is None:
+            raise LaunchRefused(
+                f"{name} is dead ({held.how}) and there is nowhere to keep its record"
+            )
+        record = keep_kill(runner, api, held, name, project_id, run_id, kills)
         _call(runner, ["docker", "rm", "--force", name], f"removing the dead {name}")
-        replaced = code
+        replaced = held.exit_code
     args = [
         "docker",
         "run",
@@ -241,14 +356,12 @@ def launch(
     chosen_network = network or api.network
     if chosen_network:
         args += ["--network", chosen_network]
-    if any(HOST_GATEWAY in value for value in api.env.values()):
-        args += ["--add-host", f"{HOST_GATEWAY}:host-gateway"]
     with env_file(api.env) as path:
         args += ["--env-file", str(path), chosen_image, "run", project_id, run_id]
         result = runner(args)
     if result.returncode != 0:
         detail = redact((result.stderr or result.stdout).strip()[-500:], api.env.values())
         if "is already in use" in detail:
-            return Launched("already_running", name, replaced)
+            return Launched("already_running", name, replaced, record)
         raise LaunchRefused(f"launching {name}: `docker run` exited {result.returncode}: {detail}")
-    return Launched("launched", name, replaced)
+    return Launched("launched", name, replaced, record)

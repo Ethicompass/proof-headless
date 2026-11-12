@@ -24,6 +24,8 @@ class FakeLens:
 
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     relaunch_answer: str = "launched"
+    relaunch_status: int | None = None
+    """An HTTP status the relaunch route answers with instead of launching."""
     polls_to_done: int = 1
     fails: frozenset[str] = frozenset()
     reads: dict[str, int] = field(default_factory=dict)
@@ -77,6 +79,9 @@ class FakeLens:
             return httpx.Response(404, json={"detail": f"no run {key}"})
         if request.method == "POST" and parts[-1] == "launch":
             self.relaunches.append(key)
+            if self.relaunch_status is not None:
+                detail = f"run {key} is not admitted"
+                return httpx.Response(self.relaunch_status, json={"detail": detail})
             answer = {"project_id": parts[1], "run_id": parts[3], "launch": self.relaunch_answer}
             if self.relaunch_answer == "launch_failed":
                 return httpx.Response(503, json={**answer, "reason": "daemon unreachable"})
@@ -108,6 +113,7 @@ class FakeDocker:
         ]
     )
     containers: dict[str, str] = field(default_factory=dict)
+    created: str = "2026-11-12T10:00:00.000000000Z"
     """Run containers by name, to their status."""
     calls: list[list[str]] = field(default_factory=list)
     env_files: list[Path] = field(default_factory=list)
@@ -130,7 +136,13 @@ class FakeDocker:
             name = args[-1]
             if name not in self.containers:
                 return done(code=1, stderr=f"Error: No such object: {name}")
-            return done(f"{self.containers[name]} 137\n")
+            status = self.containers[name]
+            state = {"Status": status, "ExitCode": 137, "OOMKilled": False}
+            if status != "created":
+                state["FinishedAt"] = "2026-11-12T10:00:00.123456789Z"
+            return done(f"{json.dumps(state)}\t{self.created}\n")
+        if args[1] == "logs":
+            return done("loading\n", stderr=f"Traceback: token {SECRET_VALUE} rejected\n")
         if args[1] == "inspect":
             document = {
                 "Config": {"Env": self.api_env},

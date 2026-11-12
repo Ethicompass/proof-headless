@@ -70,7 +70,11 @@ proof lens run acme <run-id>    # one run
 is harmless. It asks lens-api to relaunch first (`POST /projects/{p}/runs/{r}/launch`); when that
 cannot launch, it starts `lens-run` by hand with the environment the running lens-api container
 gives its jobs, through a 0600 env file deleted right after (`--manual` skips the relaunch,
-`--no-fallback` forbids the hand launch). It then waits for the result (`--timeout`).
+`--no-fallback` forbids the hand launch). A relaunch Lens refuses (404, 409) is reported and never
+launched by hand. The hand launch uses lens-api's `LENS_DOCKER_NETWORK`, as its dispatcher does. A
+dead container holding the run's name is recorded first (exit code, last log lines, redacted) under
+`$PROOF_HOME/bundles/<client>/lens/kills/`, then removed. It then waits for the result
+(`--timeout`).
 
 Read commands take `--json`. Results go to standard output, and messages for the operator go to
 standard error.

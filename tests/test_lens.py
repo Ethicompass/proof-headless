@@ -147,7 +147,7 @@ def test_when_lens_cannot_launch_the_job_is_started_by_hand_with_its_environment
     assert run[-4] == "registry.local/lens-run@sha256:" + "a" * 64
     assert run[run.index("--name") + 1] == launcher.container_name(PROJECT, "r1")
     assert run[run.index("--network") + 1] == "lens"
-    assert "host.docker.internal:host-gateway" in run
+    assert "--add-host" not in run
     assert not any(SECRET_VALUE in arg for arg in run)
     assert sorted(daemon.env_seen) == sorted(
         [
@@ -185,16 +185,82 @@ def test_a_live_container_under_the_runs_name_is_not_launched_twice(lens: FakeLe
     assert not any(call[1] == "run" for call in fake.calls)
 
 
-def test_a_dead_container_under_the_runs_name_is_replaced_and_its_exit_reported(
-    lens: FakeLens,
+def test_a_dead_container_is_recorded_redacted_before_it_is_replaced(
+    lens: FakeLens, tmp_path: Path
 ) -> None:
     lens.put(f"{PROJECT}/r1", "failed", attempts=1)
     fake = FakeDocker(lens)
+    name = launcher.container_name(PROJECT, "r1")
+    fake.containers[name] = "exited"
+    api = launcher.read_api(fake, "lens-lens-api-1")
+    launched = launcher.launch(fake, api, PROJECT, "r1", kills=tmp_path / "kills")
+    assert launched.launch == "launched" and launched.replaced == 137
+    assert [call[1] for call in fake.calls[-4:]] == ["inspect", "logs", "rm", "run"]
+    assert launched.record is not None
+    assert launched.record.stat().st_mode & 0o777 == 0o600
+    record = json.loads(launched.record.read_text())
+    assert record["exit_code"] == 137 and record["container"] == name
+    assert record["error"] == "lens-run killed by the runtime: exited 137"
+    assert "***" in record["log_tail"] and SECRET_VALUE not in launched.record.read_text()
+
+
+def test_a_dead_container_is_not_removed_without_a_place_for_its_record(lens: FakeLens) -> None:
+    fake = FakeDocker(lens)
     fake.containers[launcher.container_name(PROJECT, "r1")] = "exited"
     api = launcher.read_api(fake, "lens-lens-api-1")
-    launched = launcher.launch(fake, api, PROJECT, "r1")
-    assert launched == launcher.Launched("launched", launcher.container_name(PROJECT, "r1"), 137)
-    assert [call[1] for call in fake.calls[-3:]] == ["inspect", "rm", "run"]
+    with pytest.raises(launcher.LaunchRefused, match="nowhere to keep its record"):
+        launcher.launch(fake, api, PROJECT, "r1")
+    assert not any(call[1] == "rm" for call in fake.calls)
+
+
+@pytest.mark.parametrize(("age", "expected"), [(30.0, "already_running"), (61.0, "launched")])
+def test_a_container_created_and_never_started_is_dead_after_the_grace(
+    lens: FakeLens, tmp_path: Path, age: float, expected: str
+) -> None:
+    lens.put(f"{PROJECT}/r1", "accepted")
+    fake = FakeDocker(lens)
+    fake.containers[launcher.container_name(PROJECT, "r1")] = "created"
+    created = launcher._moment(fake.created)
+    api = launcher.read_api(fake, "lens-lens-api-1")
+    launched = launcher.launch(fake, api, PROJECT, "r1", kills=tmp_path, now=lambda: created + age)
+    assert launched.launch == expected
+
+
+def test_without_a_configured_network_the_job_goes_where_lens_api_would_put_it(
+    lens: FakeLens,
+) -> None:
+    lens.put(f"{PROJECT}/r1", "accepted")
+    fake = FakeDocker(lens)
+    fake.api_env = [item for item in fake.api_env if not item.startswith("LENS_DOCKER_NETWORK")]
+    api = launcher.read_api(fake, "lens-lens-api-1")
+    assert api.network is None
+    launcher.launch(fake, api, PROJECT, "r1")
+    run = next(call for call in fake.calls if call[1] == "run")
+    assert "--network" not in run
+
+
+@pytest.mark.parametrize("status", [404, 409, 500])
+def test_a_relaunch_lens_refuses_is_never_launched_by_hand(
+    lens: FakeLens, daemon: FakeDocker, status: int
+) -> None:
+    specs("r1")
+    lens.put(f"{PROJECT}/r1", "accepted")
+    lens.relaunch_status = status
+    result = runner.invoke(app, ["lens", "run", "acme", "r1"])
+    assert result.exit_code == 1
+    assert "not admitted" in " ".join(result.stdout.split())
+    assert daemon.calls == []
+
+
+def test_a_lens_without_the_relaunch_route_falls_back_to_the_hand_launch(
+    lens: FakeLens, daemon: FakeDocker
+) -> None:
+    specs("r1")
+    lens.put(f"{PROJECT}/r1", "accepted")
+    lens.relaunch_status = 405
+    result = runner.invoke(app, ["lens", "run", "acme", "r1", "--interval", "0"])
+    assert result.exit_code == 0, result.output
+    assert any(call[1] == "run" for call in daemon.calls)
 
 
 def test_a_run_lens_never_received_is_refused_without_launching(
