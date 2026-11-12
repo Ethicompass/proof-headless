@@ -10,17 +10,38 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterable
 
 import typer
 from rich.table import Table
 
 from proof_headless import paths, secrets
 from proof_headless.console import err, out
-from proof_headless.stack.render import STACK_SECRETS, reconfigures
 
 app = typer.Typer(
     help="The operator's secrets file: set a value, list the names.", no_args_is_help=True
 )
+
+
+def present() -> frozenset[str]:
+    """The names the secrets file defines, or a refusal when other users can read it: the one
+    check every command that hands the file to compose makes first."""
+    try:
+        return secrets.names(paths.secrets_file())
+    except secrets.SecretsFileExposed as error:
+        err.print(f"[fail]Refused.[/fail] {error}")
+        raise typer.Exit(2) from None
+
+
+def require(needed: Iterable[str], why: str) -> None:
+    """Refuse unless the secrets file defines every name in `needed`, saying who needs them."""
+    missing = sorted(set(needed) - present())
+    if missing:
+        err.print(
+            f"[fail]Refused.[/fail] {why} need {missing}, and {paths.secrets_file()} does not "
+            "define them. Add each with `proof secrets set NAME`."
+        )
+        raise typer.Exit(2)
 
 
 def _read_value(name: str) -> str:
@@ -33,13 +54,6 @@ def _read_value(name: str) -> str:
 @app.command(name="set")
 def set_secret(name: str) -> None:
     """Set NAME in the secrets file, reading its value from a hidden prompt or standard input."""
-    if reconfigures(name):
-        err.print(
-            f"[fail]Refused.[/fail] Yield and Lens load the secrets file, and {name} would "
-            "reconfigure them instead of naming a credential. Stack credentials allowed here: "
-            f"{sorted(STACK_SECRETS)}."
-        )
-        raise typer.Exit(2)
     path = paths.secrets_file()
     try:
         secrets.write(path, name, _read_value(name))
@@ -55,11 +69,7 @@ def list_secrets(
 ) -> None:
     """List the names the secrets file defines. Never their values."""
     path = paths.secrets_file()
-    try:
-        defined = sorted(secrets.names(path))
-    except secrets.SecretsFileExposed as error:
-        err.print(f"[fail]Refused.[/fail] {error}")
-        raise typer.Exit(2) from None
+    defined = sorted(present())
     if as_json:
         out.print_json(json.dumps({"file": str(path), "names": defined}))
         return

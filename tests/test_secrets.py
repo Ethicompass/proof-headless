@@ -85,12 +85,6 @@ def test_set_reads_the_value_from_stdin_and_never_prints_it() -> None:
     assert "very-secret" not in listed.output
 
 
-def test_set_refuses_a_name_yield_reads_as_its_own_setting() -> None:
-    result = runner.invoke(app, ["secrets", "set", "YIELD_STORE_BACKEND"], input="memory\n")
-    assert result.exit_code == 2
-    assert not paths.secrets_file().exists()
-
-
 def test_list_refuses_an_exposed_file() -> None:
     path = paths.secrets_file()
     path.write_text("A=b\n")

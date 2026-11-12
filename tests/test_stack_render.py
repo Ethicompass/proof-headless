@@ -2,22 +2,36 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
+from proof_headless import endpoints
+from proof_headless.models.manifest import Manifest, Role, load
 from proof_headless.stack import lock as locks
 from proof_headless.stack import render
-from tests.conftest import LOCK
+from tests.conftest import LOCK, SPARK_MANIFEST
 
-SECRETS = Path("/home/operator/.config/proof/secrets.env")
 GOLDEN = Path(__file__).parent / "golden" / "stack-compose.yaml"
+SECRETS = ("ACME_TARGET_KEY",)
 
 
-def _document() -> dict[str, Any]:
-    return render.compose(locks.load(LOCK), SECRETS)
+def _document(manifest: Manifest | None = None, names: tuple[str, ...] = SECRETS) -> dict[str, Any]:
+    return render.compose(locks.load(LOCK), manifest or load(SPARK_MANIFEST), names)
+
+
+def _with(**changes: Any) -> Manifest:
+    """The Spark manifest with its chat model changed."""
+    spark = load(SPARK_MANIFEST)
+    models = tuple(
+        model.model_copy(update=changes) if Role.CHAT in model.roles else model
+        for model in spark.models
+    )
+    return spark.model_copy(update={"models": models})
 
 
 def test_every_service_runs_a_locked_image_by_digest() -> None:
@@ -68,13 +82,63 @@ def test_lens_reaches_yield_s_store_and_yield_reaches_lens_api_on_the_shared_net
     assert document["networks"]["proof-models"] == {"name": "proof-models", "external": True}
 
 
-def test_the_secrets_file_is_the_apis_env_file_and_optional() -> None:
+def test_no_service_loads_the_secrets_file_and_yield_gets_only_the_bundles_names() -> None:
     services = _document()["services"]
-    for api in ("yield-api", "yield-compute", "lens-api"):
-        assert services[api]["env_file"] == [{"path": str(SECRETS), "required": False}]
     for name, service in services.items():
-        if name not in {"yield-api", "yield-compute", "lens-api"}:
-            assert "env_file" not in service, name
+        assert "env_file" not in service, name
+    for api in ("yield-api", "yield-compute"):
+        environment = services[api]["environment"]
+        assert environment["ACME_TARGET_KEY"] == "${ACME_TARGET_KEY:-}"
+        assert "HF_TOKEN" not in environment
+    lens = services["lens-api"]["environment"]
+    assert "ACME_TARGET_KEY" not in lens
+    assert not any(key.endswith("_CREDENTIAL_REF") for key in lens)
+
+
+def test_a_bundle_cannot_declare_a_yield_or_lens_setting_as_a_secret() -> None:
+    with pytest.raises(render.StackInvalid, match="YIELD_STORE_BACKEND"):
+        _document(names=("YIELD_STORE_BACKEND",))
+
+
+def test_lens_reads_and_curates_with_the_chat_model_reasoning_off() -> None:
+    chat = load(SPARK_MANIFEST).named("chat")
+    lens = _document()["services"]["lens-api"]["environment"]
+    for role in ("READER", "CURATOR"):
+        assert lens[f"LENS_MODEL_{role}_PROVIDER"] == "openai_compatible"
+        assert lens[f"LENS_MODEL_{role}_BASE_URL"] == "http://chat:8000/v1"
+        assert lens[f"LENS_MODEL_{role}_ID"] == chat.served_name
+        assert lens[f"LENS_MODEL_{role}_STRUCTURED_OUTPUT"] == "json_schema"
+        body = json.loads(lens[f"LENS_MODEL_{role}_EXTRA_BODY"])
+        assert body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_a_chat_model_with_no_reasoning_switch_gets_no_extra_body() -> None:
+    lens = _document(_with(reasoning_switch=None))["services"]["lens-api"]["environment"]
+    assert lens["LENS_MODEL_READER_ID"]
+    assert not any(key.endswith("_EXTRA_BODY") for key in lens)
+
+
+def test_a_manifest_with_no_chat_model_is_refused() -> None:
+    with pytest.raises(render.StackInvalid, match="chat role"):
+        _document(_with(roles=frozenset({Role.GUARDIAN})))
+
+
+def test_the_models_network_is_the_manifest_s() -> None:
+    spark = load(SPARK_MANIFEST)
+    document = _document(spark.model_copy(update={"network": "lab-models"}))
+    assert document["networks"]["lab-models"] == {"name": "lab-models", "external": True}
+    assert "proof-models" not in document["networks"]
+    services = document["services"]
+    assert services["yield-api"]["environment"]["YIELD_EXTRA_NETWORKS"] == "proof-stack,lab-models"
+    assert services["lens-api"]["environment"]["LENS_EXTRA_NETWORKS"] == "proof-stack,lab-models"
+
+
+def test_the_ports_the_stack_publishes_are_the_endpoints_commands_call() -> None:
+    ports = render.PORTS
+    assert endpoints.YIELD_API.endswith(f":{ports['yield-api']}")
+    assert endpoints.YIELD_COMPUTE.endswith(f":{ports['yield-compute']}")
+    assert endpoints.LENS_API.endswith(f":{ports['lens-api']}")
+    assert endpoints.BRAIN_REGISTRY.endswith(f":{ports['brain-registry']}")
 
 
 def test_lens_pins_the_digests_its_seed_checks() -> None:
@@ -106,18 +170,11 @@ def test_seeds_and_buckets_are_one_shot_and_everything_else_stays_up() -> None:
 
 
 def test_write_copies_the_seed_beside_the_compose_file(tmp_path: Path) -> None:
-    path = render.write(locks.load(LOCK), tmp_path / "stack", SECRETS)
+    path = render.write(locks.load(LOCK), load(SPARK_MANIFEST), tmp_path / "stack", SECRETS)
     assert (path.parent / "seed" / "yield" / "seed.sh").is_file()
     assert (path.parent / "seed" / "lens" / "seed.py").is_file()
     assert (tmp_path / "declarations").is_dir(), "where `proof bundle load` puts declarations"
     assert not (path.parent / "seed" / "yield" / "catalogues" / "bpd").exists()
-
-
-def test_a_name_yield_or_lens_reads_as_a_setting_cannot_be_a_secret() -> None:
-    assert render.reconfigures("YIELD_STORE_BACKEND")
-    assert render.reconfigures("LENS_RUN_IMAGE")
-    assert not render.reconfigures("YIELD_S3_SECRET_KEY")
-    assert not render.reconfigures("HF_TOKEN")
 
 
 def test_the_lock_renders_the_reviewed_compose_file() -> None:

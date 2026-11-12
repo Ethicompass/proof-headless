@@ -86,9 +86,27 @@ def test_a_registry_refusal_is_a_resolve_failure_naming_the_reference() -> None:
 
 def test_the_command_writes_a_lock_that_loads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(commands, "imagetools", lambda: fake_registry([]))
+    monkeypatch.setattr(commands, "host_platform_name", lambda: "linux/arm64")
     result = runner.invoke(app, ["stack", "pin", "--channel", "develop"])
     assert result.exit_code == 0, result.output
     assert lock.load(paths.default_lock()).channel == "develop"
+
+
+def test_the_default_channel_is_develop(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(commands, "imagetools", lambda: fake_registry([]))
+    monkeypatch.setattr(commands, "host_platform_name", lambda: "linux/arm64")
+    assert runner.invoke(app, ["stack", "pin"]).exit_code == 0
+    assert lock.load(paths.default_lock()).channel == "develop"
+
+
+def test_pin_refuses_a_channel_with_no_build_for_the_target_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(commands, "imagetools", lambda: fake_registry([]))
+    result = runner.invoke(app, ["stack", "pin", "--platform", "linux/amd64"])
+    assert result.exit_code == 2
+    assert "linux/amd64" in " ".join(result.output.split())
+    assert not paths.default_lock().exists()
 
 
 def test_the_command_refuses_an_unknown_channel() -> None:

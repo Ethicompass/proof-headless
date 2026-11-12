@@ -12,19 +12,19 @@ from typer.testing import CliRunner
 from proof_headless import paths
 from proof_headless.cli import app
 from proof_headless.docker import Compose
+from proof_headless.models.manifest import load
 from proof_headless.stack import commands, render
 from proof_headless.stack import lock as locks
-from proof_headless.stack.lock import Lock
-from tests.conftest import LOCK
+from tests.conftest import EXAMPLE_BUNDLE, LOCK, SPARK_MANIFEST
 from tests.fakes import FakeCompose
 
 runner = CliRunner()
-USE_LOCK = ["--lock", str(LOCK)]
+USE_LOCK = ["--lock", str(LOCK), "--manifest", str(SPARK_MANIFEST)]
 
 
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> FakeCompose:
-    document = render.compose(locks.load(LOCK), paths.secrets_file())
+    document = render.compose(locks.load(LOCK), load(SPARK_MANIFEST))
     compose = FakeCompose(
         polls_to_healthy=1,
         services=tuple(document["services"]),
@@ -37,11 +37,10 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeCompose:
         },
     )
 
-    def compose_for(lock: Lock) -> Compose:
-        file = render.write(lock, paths.home() / "stack", paths.secrets_file())
+    def project(file: Path) -> Compose:
         return Compose(render.PROJECT, file, env_file=paths.secrets_file(), runner=compose)
 
-    monkeypatch.setattr(commands, "compose_for", compose_for)
+    monkeypatch.setattr(commands, "project", project)
     monkeypatch.setattr(commands, "POLL_SECONDS", 0.0)
     monkeypatch.setattr(commands, "host_platform_name", lambda: "linux/arm64")
     return compose
@@ -75,7 +74,9 @@ def test_up_refuses_images_with_no_build_for_this_host(fake: FakeCompose, tmp_pa
     raw["images"]["yield-api"]["platforms"] = ["linux/amd64"]
     amd64 = tmp_path / "amd64.lock"
     amd64.write_text(yaml.safe_dump(raw))
-    result = runner.invoke(app, ["stack", "up", "--lock", str(amd64)])
+    result = runner.invoke(
+        app, ["stack", "up", "--lock", str(amd64), "--manifest", str(SPARK_MANIFEST)]
+    )
     assert result.exit_code == 2
     assert "yield-api" in _text(result.output) and "linux/arm64" in _text(result.output)
     assert fake.calls == []
@@ -90,14 +91,32 @@ def test_up_refuses_a_secrets_file_others_can_read(fake: FakeCompose) -> None:
     assert fake.calls == []
 
 
-def test_up_refuses_a_secret_that_would_reconfigure_yield(fake: FakeCompose) -> None:
-    path = paths.secrets_file()
-    path.write_text("YIELD_STORE_BACKEND=memory\nYIELD_S3_SECRET_KEY=s3cret\n")
-    path.chmod(0o600)
-    result = runner.invoke(app, ["stack", "up", *USE_LOCK])
+def test_up_refuses_a_bundle_secret_the_file_does_not_define(fake: FakeCompose) -> None:
+    result = runner.invoke(app, ["stack", "up", *USE_LOCK, "--bundle", str(EXAMPLE_BUNDLE)])
     assert result.exit_code == 2
-    assert "YIELD_STORE_BACKEND" in _text(result.output)
-    assert "YIELD_S3_SECRET_KEY" not in _text(result.output)
+    assert "ACME_TARGET_KEY" in _text(result.output)
+    assert fake.calls == []
+
+
+def test_up_maps_a_bundle_s_secrets_into_yield_and_nothing_else(fake: FakeCompose) -> None:
+    path = paths.secrets_file()
+    path.write_text("ACME_TARGET_KEY='k'\nHF_TOKEN='hf'\n")
+    path.chmod(0o600)
+    result = runner.invoke(app, ["stack", "up", *USE_LOCK, "--bundle", str(EXAMPLE_BUNDLE)])
+    assert result.exit_code == 0, result.output
+    document = render.read(commands.stack_file())
+    assert "ACME_TARGET_KEY" in document["services"]["yield-api"]["environment"]
+    assert "hf" not in commands.stack_file().read_text()
+
+
+def test_up_refuses_a_manifest_with_no_chat_model(fake: FakeCompose, tmp_path: Path) -> None:
+    raw = yaml.safe_load(SPARK_MANIFEST.read_text())
+    raw["models"] = [m for m in raw["models"] if "chat" not in m["roles"]]
+    manifest = tmp_path / "models.yaml"
+    manifest.write_text(yaml.safe_dump(raw))
+    result = runner.invoke(app, ["stack", "up", "--lock", str(LOCK), "--manifest", str(manifest)])
+    assert result.exit_code == 2
+    assert "chat role" in _text(result.output)
 
 
 def test_a_failed_seed_fails_up_with_its_log(fake: FakeCompose) -> None:
@@ -110,7 +129,7 @@ def test_a_failed_seed_fails_up_with_its_log(fake: FakeCompose) -> None:
 
 def test_status_shows_each_service_s_digest_state_and_ports(fake: FakeCompose) -> None:
     runner.invoke(app, ["stack", "up", *USE_LOCK])
-    result = runner.invoke(app, ["stack", "status", *USE_LOCK, "--json"])
+    result = runner.invoke(app, ["stack", "status", "--json"])
     assert result.exit_code == 0, result.output
     document = json.loads(result.stdout)
     rows = {row["service"]: row for row in document["services"]}
@@ -122,34 +141,53 @@ def test_status_shows_each_service_s_digest_state_and_ports(fake: FakeCompose) -
     assert all(row["matches_lock"] for row in rows.values())
 
 
-def test_status_before_up_reports_every_service_absent(fake: FakeCompose) -> None:
-    result = runner.invoke(app, ["stack", "status", *USE_LOCK, "--json"])
+def test_status_after_render_reports_every_service_absent(fake: FakeCompose) -> None:
+    runner.invoke(app, ["stack", "render", *USE_LOCK])
+    result = runner.invoke(app, ["stack", "status", "--json"])
     assert result.exit_code == 0, result.output
     rows = json.loads(result.stdout)["services"]
     assert {row["state"] for row in rows} == {"absent"}
     assert "brain-registry" in {row["service"] for row in rows}
 
 
+def test_read_commands_never_re_render_the_started_stack(fake: FakeCompose) -> None:
+    runner.invoke(app, ["stack", "up", *USE_LOCK])
+    file = commands.stack_file()
+    file.write_text(file.read_text() + "# started from this\n")
+    for command in (["status"], ["logs", "lens-api"], ["down"]):
+        assert runner.invoke(app, ["stack", *command]).exit_code == 0
+    assert file.read_text().endswith("# started from this\n")
+
+
+def test_read_commands_before_any_up_say_how_to_start(fake: FakeCompose) -> None:
+    for command in (["status"], ["logs", "lens-api"], ["down"]):
+        result = runner.invoke(app, ["stack", *command])
+        assert result.exit_code == 2
+        assert "proof stack up" in _text(result.output)
+
+
 def test_status_flags_a_container_running_another_image_than_the_lock(fake: FakeCompose) -> None:
     fake.images["lens-api"] = "ghcr.io/ethicompass/lens-api:old"
     runner.invoke(app, ["stack", "up", *USE_LOCK])
-    result = runner.invoke(app, ["stack", "status", *USE_LOCK, "--json"])
+    result = runner.invoke(app, ["stack", "status", "--json"])
     rows = {row["service"]: row for row in json.loads(result.stdout)["services"]}
     assert rows["lens-api"]["matches_lock"] is False
 
 
 def test_down_stops_the_project(fake: FakeCompose) -> None:
-    result = runner.invoke(app, ["stack", "down", *USE_LOCK])
+    runner.invoke(app, ["stack", "up", *USE_LOCK])
+    result = runner.invoke(app, ["stack", "down"])
     assert result.exit_code == 0, result.output
     assert any("down" in call for call in fake.calls)
 
 
 def test_logs_refuses_a_service_the_stack_does_not_have(fake: FakeCompose) -> None:
-    result = runner.invoke(app, ["stack", "logs", "nope", *USE_LOCK])
+    runner.invoke(app, ["stack", "render", *USE_LOCK])
+    result = runner.invoke(app, ["stack", "logs", "nope"])
     assert result.exit_code == 2
 
 
 def test_a_missing_lock_is_refused_with_how_to_make_one() -> None:
-    result = runner.invoke(app, ["stack", "status"])
+    result = runner.invoke(app, ["stack", "up", "--manifest", str(SPARK_MANIFEST)])
     assert result.exit_code == 2
     assert "proof stack pin" in _text(result.output)

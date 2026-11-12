@@ -20,3 +20,4 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 LOCK = ROOT / "appliance.lock"
+EXAMPLE_BUNDLE = ROOT / "examples" / "bundle-acme"

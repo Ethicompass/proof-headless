@@ -78,9 +78,7 @@ services:
       YIELD_JUDGE_PROBE_TIMEOUT_SECONDS: '30'
       YIELD_BRAIN_REGISTRY_INSECURE: 'true'
       YIELD_BRAIN_REGISTRY_SECRET_REF: ''
-    env_file:
-    - path: /home/operator/.config/proof/secrets.env
-      required: false
+      ACME_TARGET_KEY: ${ACME_TARGET_KEY:-}
     volumes: &id001
     - /var/run/docker.sock:/var/run/docker.sock
     networks:
@@ -136,9 +134,7 @@ services:
       YIELD_EXTRA_NETWORKS: proof-stack,proof-models
       YIELD_DRIVER_IMAGE: ghcr.io/ethicompass/yield-driver:develop@sha256:b805e36444c762a22affd506c7b17d3dd9c270b942a54fb0b34193b20df3f52c
       YIELD_COMPUTE_URL: http://yield-compute:8080
-    env_file:
-    - path: /home/operator/.config/proof/secrets.env
-      required: false
+      ACME_TARGET_KEY: ${ACME_TARGET_KEY:-}
     volumes: *id001
     networks:
     - proof-yield
@@ -247,9 +243,18 @@ services:
       LENS_YIELD_STORE_SECRET_KEY: ${YIELD_S3_SECRET_KEY:-yieldadmin}
       LENS_DECLARATION_SOURCE: http
       LENS_DECLARATION_SOURCE_URL: http://lens-declarations:8080
-    env_file:
-    - path: /home/operator/.config/proof/secrets.env
-      required: false
+      LENS_MODEL_READER_PROVIDER: openai_compatible
+      LENS_MODEL_READER_BASE_URL: http://chat:8000/v1
+      LENS_MODEL_READER_ID: nemotron-3.5-lightning
+      LENS_MODEL_READER_STRUCTURED_OUTPUT: json_schema
+      LENS_MODEL_READER_EXTRA_BODY: '{"chat_template_kwargs": {"enable_thinking":
+        false}}'
+      LENS_MODEL_CURATOR_PROVIDER: openai_compatible
+      LENS_MODEL_CURATOR_BASE_URL: http://chat:8000/v1
+      LENS_MODEL_CURATOR_ID: nemotron-3.5-lightning
+      LENS_MODEL_CURATOR_STRUCTURED_OUTPUT: json_schema
+      LENS_MODEL_CURATOR_EXTRA_BODY: '{"chat_template_kwargs": {"enable_thinking":
+        false}}'
     volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     networks:

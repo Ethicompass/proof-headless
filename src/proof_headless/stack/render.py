@@ -14,32 +14,40 @@ Networks, all with fixed names because the APIs hand them to the daemon for ever
 - `proof-stack`: the hops between the two. Yield's measurement job posts its webhook to
   `lens-api`, and `lens-run` reads Yield's store as `yield-minio`. Lens's MinIO stays off it, so
   each store has one name everywhere. The brain registry is here as `brain-registry:5000`.
-- `proof-models`: the models' network, made by `proof models` (external here). Jobs join it to
-  reach `http://<model>:8000/v1`.
+- the models' network, named by the models manifest (`proof-models` by default) and external
+  here. Jobs join it to reach `http://<model>:8000/v1`.
 
-Every service lists the networks it joins, and every job joins `proof-stack` and `proof-models`
-through `YIELD_EXTRA_NETWORKS` and `LENS_EXTRA_NETWORKS`. Every host port binds loopback only.
+Every service lists the networks it joins, and every job joins `proof-stack` and the models'
+network through `YIELD_EXTRA_NETWORKS` and `LENS_EXTRA_NETWORKS`. Every host port binds loopback.
+
+Least privilege for secrets: no service loads the operator's secrets file. Compose reads it as its
+`--env-file` and substitutes only the names this file references: the store credentials, and for
+yield-api and yield-compute (the two that resolve a `secret_ref`) exactly the names the bundles
+declare. `HF_TOKEN` stays with the models, and lens-api gets none, because the only variable its
+`*_REF` settings name is the signing secret mapped below.
 
 Rendering is pure: what would run can be read (`proof stack render`) and diffed in a golden test.
 """
 
 from __future__ import annotations
 
+import json
 import shutil
+from collections.abc import Iterable
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from proof_headless import endpoints
+from proof_headless.models.manifest import Manifest, ModelEntry, Role
 from proof_headless.stack.lock import Lock
 
 PROJECT = "proof-stack"
 YIELD_NET = "proof-yield"
 LENS_NET = "proof-lens"
 SHARED_NET = "proof-stack"
-MODELS_NET = "proof-models"
-JOB_NETWORKS = f"{SHARED_NET},{MODELS_NET}"
 
 PORTS = {
     "yield-api": 8080,
@@ -64,22 +72,19 @@ LENS_STORE_CREDENTIALS = ("${LENS_S3_ACCESS_KEY:-lensadmin}", "${LENS_S3_SECRET_
 there, else the development defaults of each repository. The stores answer on loopback and on
 the stack's own networks only."""
 
-STACK_SECRETS = frozenset(
-    {
-        "YIELD_S3_ACCESS_KEY",
-        "YIELD_S3_SECRET_KEY",
-        "LENS_S3_ACCESS_KEY",
-        "LENS_S3_SECRET_KEY",
-        "LENS_WEBHOOK_SIGNING_SECRET",
-    }
-)
-"""The `YIELD_`/`LENS_` names the secrets file may hold: the ones this file interpolates."""
+
+class StackInvalid(ValueError):
+    """What the stack would be rendered from cannot make a working stack."""
 
 
-def reconfigures(name: str) -> bool:
-    """Whether a secret named `name` would reconfigure Yield or Lens, which load the secrets file:
-    a `YIELD_`/`LENS_` name is a setting of theirs and cannot be a `secret_ref`."""
-    return name.startswith(("YIELD_", "LENS_")) and name not in STACK_SECRETS
+def chat_model(manifest: Manifest) -> ModelEntry:
+    """The model Lens's Reader and Curator ask: the manifest's first with the chat role."""
+    for model in manifest.models:
+        if Role.CHAT in model.roles:
+            return model
+    raise StackInvalid(
+        "no model in the manifest has the chat role, and Lens's Reader and Curator need one"
+    )
 
 
 SEED_PACKAGE = "proof_headless.stack"
@@ -140,10 +145,29 @@ def _buckets(
     }
 
 
-def _secrets(secrets_file: Path) -> list[dict[str, Any]]:
-    """The operator's secrets file, for the services that resolve a `secret_ref`. Optional: absent,
-    the stack still starts and a run naming a secret is refused at its gate."""
-    return [{"path": str(secrets_file), "required": False}]
+def _secret_environment(names: Iterable[str]) -> dict[str, str]:
+    """Each named secret, substituted by compose from the secrets file. `:-` and not `:?`, so a
+    missing one does not also refuse `ps`, `logs` and `down`; `up` refuses it before compose."""
+    return {name: f"${{{name}:-}}" for name in sorted(set(names))}
+
+
+def _lens_models(model: ModelEntry) -> dict[str, str]:
+    """Lens's Reader and Curator on the served chat model, with its reasoning off when it has a
+    switch: both answer to a JSON schema, and a reasoning model spends its budget thinking. The
+    served vLLM takes no key, so neither role names a credential."""
+    settings: dict[str, str] = {}
+    for role in ("READER", "CURATOR"):
+        prefix = f"LENS_MODEL_{role}_"
+        settings |= {
+            f"{prefix}PROVIDER": "openai_compatible",
+            f"{prefix}BASE_URL": f"http://{model.name}:8000/v1",
+            f"{prefix}ID": model.served_name,
+            f"{prefix}STRUCTURED_OUTPUT": "json_schema",
+        }
+        if model.reasoning_switch:
+            body = {"chat_template_kwargs": {model.reasoning_switch: False}}
+            settings[f"{prefix}EXTRA_BODY"] = json.dumps(body)
+    return settings
 
 
 def _lens_assets() -> list[dict[str, str]]:
@@ -152,7 +176,7 @@ def _lens_assets() -> list[dict[str, str]]:
     return assets
 
 
-def _yield_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
+def _yield_services(lock: Lock, networks: str, secret_names: Iterable[str]) -> dict[str, Any]:
     minio = lock.image("minio").pinned
     compute_image = lock.image("yield-compute").pinned
     user, password = YIELD_STORE_CREDENTIALS
@@ -167,8 +191,15 @@ def _yield_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
         "YIELD_SECRETS_BACKEND": "env",
         "YIELD_DISPATCH_BACKEND": "docker",
         "YIELD_DOCKER_NETWORK": YIELD_NET,
-        "YIELD_EXTRA_NETWORKS": JOB_NETWORKS,
+        "YIELD_EXTRA_NETWORKS": networks,
     }
+    secrets = _secret_environment(secret_names)
+    settings = sorted(name for name in secrets if name.startswith(("YIELD_", "LENS_")))
+    if settings:
+        raise StackInvalid(
+            f"{settings} are Yield or Lens settings, not secret names: mapped into Yield they "
+            "would reconfigure it, so a bundle cannot declare them"
+        )
     socket = ["/var/run/docker.sock:/var/run/docker.sock"]
     return {
         "yield-minio": _minio(
@@ -203,8 +234,8 @@ def _yield_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
                 "YIELD_JUDGE_PROBE_TIMEOUT_SECONDS": "30",
                 "YIELD_BRAIN_REGISTRY_INSECURE": "true",
                 "YIELD_BRAIN_REGISTRY_SECRET_REF": "",
-            },
-            "env_file": _secrets(secrets_file),
+            }
+            | secrets,
             "volumes": socket,
             "networks": [YIELD_NET, SHARED_NET],
             "restart": "unless-stopped",
@@ -214,7 +245,7 @@ def _yield_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
             "image": lock.image("python").pinned,
             "depends_on": {"yield-compute": {"condition": "service_healthy"}},
             "volumes": ["./seed/yield:/seed:ro"],
-            "environment": {"COMPUTE": "http://yield-compute:8080"},
+            "environment": {"COMPUTE": endpoints.YIELD_COMPUTE_IN_NETWORK},
             "entrypoint": ["bash", "/seed/seed.sh"],
             "networks": [YIELD_NET],
         },
@@ -229,9 +260,9 @@ def _yield_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
             "environment": store
             | {
                 "YIELD_DRIVER_IMAGE": lock.image("yield-driver").pinned,
-                "YIELD_COMPUTE_URL": "http://yield-compute:8080",
-            },
-            "env_file": _secrets(secrets_file),
+                "YIELD_COMPUTE_URL": endpoints.YIELD_COMPUTE_IN_NETWORK,
+            }
+            | secrets,
             "volumes": socket,
             "networks": [YIELD_NET, SHARED_NET],
             "restart": "unless-stopped",
@@ -240,7 +271,7 @@ def _yield_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
     }
 
 
-def _lens_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
+def _lens_services(lock: Lock, networks: str, chat: ModelEntry) -> dict[str, Any]:
     minio = lock.image("minio").pinned
     user, password = LENS_STORE_CREDENTIALS
     yield_user, yield_password = YIELD_STORE_CREDENTIALS
@@ -250,7 +281,7 @@ def _lens_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
         "LENS_DISPATCH_BACKEND": "docker",
         "LENS_RUN_IMAGE": lock.image("lens-run").pinned,
         "LENS_DOCKER_NETWORK": LENS_NET,
-        "LENS_EXTRA_NETWORKS": JOB_NETWORKS,
+        "LENS_EXTRA_NETWORKS": networks,
         "LENS_JOBS_BACKEND": "memory",
         "LENS_SECRETS_BACKEND": "env",
         "LENS_PUBLIC_BASE_URL": f"http://localhost:{PORTS['lens-api']}",
@@ -268,6 +299,7 @@ def _lens_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
         "LENS_YIELD_STORE_SECRET_KEY": yield_password,
         "LENS_DECLARATION_SOURCE": "http",
         "LENS_DECLARATION_SOURCE_URL": "http://lens-declarations:8080",
+        **_lens_models(chat),
     }
     seeds = [
         f"{asset['kind']}|{asset['name']}|{asset['file']}|{asset['digest']}" for asset in assets
@@ -293,7 +325,6 @@ def _lens_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
             },
             "ports": [f"127.0.0.1:{PORTS['lens-api']}:8080"],
             "environment": environment,
-            "env_file": _secrets(secrets_file),
             "volumes": ["/var/run/docker.sock:/var/run/docker.sock"],
             "networks": [LENS_NET, SHARED_NET],
             "restart": "unless-stopped",
@@ -303,7 +334,7 @@ def _lens_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
             "image": lock.image("python").pinned,
             "depends_on": {"lens-api": {"condition": "service_healthy"}},
             "volumes": ["./seed/lens:/seed:ro"],
-            "entrypoint": ["python", "/seed/seed.py", "http://lens-api:8080", *seeds],
+            "entrypoint": ["python", "/seed/seed.py", endpoints.LENS_API_IN_NETWORK, *seeds],
             "networks": [LENS_NET],
         },
     }
@@ -328,20 +359,23 @@ def _registry(lock: Lock) -> dict[str, Any]:
     }
 
 
-def compose(lock: Lock, secrets_file: Path) -> dict[str, Any]:
-    """The whole compose document for `lock`."""
+def compose(lock: Lock, manifest: Manifest, secret_names: Iterable[str] = ()) -> dict[str, Any]:
+    """The whole compose document: images from `lock`, the models' network and Lens's chat model
+    from `manifest`, and the secrets Yield may resolve from `secret_names`."""
+    models_net = manifest.network
+    networks = f"{SHARED_NET},{models_net}"
     return {
         "name": PROJECT,
         "services": {
-            **_yield_services(lock, secrets_file),
-            **_lens_services(lock, secrets_file),
+            **_yield_services(lock, networks, secret_names),
+            **_lens_services(lock, networks, chat_model(manifest)),
             "brain-registry": _registry(lock),
         },
         "networks": {
             YIELD_NET: {"name": YIELD_NET},
             LENS_NET: {"name": LENS_NET},
             SHARED_NET: {"name": SHARED_NET},
-            MODELS_NET: {"name": MODELS_NET, "external": True},
+            models_net: {"name": models_net, "external": True},
         },
         "volumes": {"yield_minio": {}, "lens_minio": {}, "brain_registry": {}},
     }
@@ -357,8 +391,10 @@ def one_shot(document: dict[str, Any]) -> list[str]:
     return [name for name, service in document["services"].items() if "restart" not in service]
 
 
-def write(lock: Lock, directory: Path, secrets_file: Path) -> Path:
-    """Render `lock` to `directory/compose.yaml`, with the seed assets beside it, make sure the
+def write(
+    lock: Lock, manifest: Manifest, directory: Path, secret_names: Iterable[str] = ()
+) -> Path:
+    """Render the stack to `directory/compose.yaml`, with the seed assets beside it, make sure the
     declarations directory exists, and return the compose file's path.
 
     The seed is copied out of the package on every render, so the stack mounts the assets of the
@@ -371,6 +407,13 @@ def write(lock: Lock, directory: Path, secrets_file: Path) -> Path:
     with resources.as_file(resources.files(SEED_PACKAGE).joinpath("seed")) as packaged:
         shutil.copytree(packaged, seed, ignore=shutil.ignore_patterns("__pycache__"))
     (directory / DECLARATIONS).resolve().mkdir(parents=True, exist_ok=True)
+    document = compose(lock, manifest, secret_names)
     path = directory / "compose.yaml"
-    path.write_text(yaml.safe_dump(compose(lock, secrets_file), sort_keys=False))
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
     return path
+
+
+def read(path: Path) -> dict[str, Any]:
+    """A compose file `write` rendered, as the stack that was started from it sees it."""
+    document: dict[str, Any] = yaml.safe_load(path.read_text())
+    return document

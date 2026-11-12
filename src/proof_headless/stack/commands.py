@@ -1,12 +1,14 @@
 """`proof stack`: pin, render, start, stop and inspect Yield, Lens and the brain registry.
 
-`up` refuses what would fail late. An image with no build for this host's architecture would pull
-and then die with `exec format error` (the released images are amd64 only until the next
-promotion, and the appliance is arm64). A secrets file others can read is refused like everywhere
-else. The models' network is created when absent, because every job joins it and a launch onto a
-missing network is refused by the API with a 503 mid-run (`docker.ensure_network` says why it
-is external to both projects). The images the APIs launch per job are
-pulled up front: neither dispatcher pulls, so a missing one would fail the first run, not `up`.
+`up` is the one command that renders. It refuses what would fail late: an image with no build for
+this host (it would pull and then die with `exec format error`), a models manifest with no chat
+model for Lens, a secrets file others can read, and a secret a bundle declares that the file does
+not define. It creates the models' network when absent (`docker.ensure_network` says why it is
+external to both projects), pulls the images the APIs launch per job (neither dispatcher pulls),
+starts the project and waits until every service is healthy and every seed exited 0.
+
+`status`, `logs` and `down` read the compose file the stack was started from and never re-render
+it, so a `pin` or a new manifest after `up` cannot change what they describe or stop.
 """
 
 from __future__ import annotations
@@ -21,17 +23,22 @@ from typing import Any, cast
 import typer
 from rich.table import Table
 
-from proof_headless import paths, secrets
+from proof_headless import paths
+from proof_headless.bundle import manifest as bundles
+from proof_headless.bundle.manifest import BundleInvalid
 from proof_headless.console import err, out
 from proof_headless.docker import (
     Compose,
     ComposeFailed,
     Runner,
     ServiceState,
+    appliance,
     docker,
     ensure_network,
-    run,
 )
+from proof_headless.models.commands import load_manifest
+from proof_headless.models.manifest import Manifest
+from proof_headless.secrets_commands import require
 from proof_headless.stack import lock as locks
 from proof_headless.stack import render
 from proof_headless.stack.lock import Channel, Lock, LockInvalid
@@ -51,6 +58,15 @@ JOB_IMAGES = ("yield-driver", "lens-run")
 LockOption = typer.Option(
     None, "--lock", "-l", help="The image lock. Default: $PROOF_HOME/appliance.lock."
 )
+ManifestOption = typer.Option(
+    None, "--manifest", "-m", help="The models manifest. Default: $PROOF_HOME/models.yaml."
+)
+BundleOption = typer.Option(
+    [],
+    "--bundle",
+    "-b",
+    help="A bundle whose declared secrets Yield may resolve (repeatable).",
+)
 
 
 def host_platform_name() -> str:
@@ -69,24 +85,62 @@ def _load(path: Path | None) -> Lock:
         raise typer.Exit(2) from None
 
 
-def compose_for(lock: Lock, runner: Runner = run) -> Compose:
-    """The compose project for `lock`, rendered under `$PROOF_HOME/stack`.
+def stack_file() -> Path:
+    """Where `up` and `render` write the stack's compose file."""
+    return paths.home() / "stack" / "compose.yaml"
 
-    The secrets file is the env file twice over: `--env-file` so compose interpolates the store
-    credentials the operator may have set, and each API's `env_file` so a run's `secret_ref`
-    resolves. Its values reach the containers and nothing else `proof` writes.
-    """
-    file = render.write(lock, paths.home() / "stack", paths.secrets_file())
-    return Compose(project=render.PROJECT, file=file, env_file=paths.secrets_file(), runner=runner)
+
+def project(file: Path) -> Compose:
+    """The stack's compose project on `file`; a test replaces it to answer without a daemon."""
+    return appliance(render.PROJECT, file)
+
+
+def started() -> tuple[Compose, dict[str, Any]]:
+    """The project and document of the stack as last rendered, without rendering it again."""
+    file = stack_file()
+    if not file.exists():
+        err.print("[fail]No stack here yet.[/fail] Start it with `proof stack up`.")
+        raise typer.Exit(2)
+    return project(file), render.read(file)
+
+
+def _secret_names(directories: list[Path]) -> list[str]:
+    names: set[str] = set()
+    for directory in directories:
+        try:
+            names |= set(bundles.load(directory).secrets)
+        except BundleInvalid as error:
+            err.print(f"[fail]Invalid bundle.[/fail] {error}")
+            raise typer.Exit(2) from None
+    return sorted(names)
+
+
+def _render(lock: Lock, manifest: Manifest, names: list[str]) -> Path:
+    try:
+        return render.write(lock, manifest, stack_file().parent, names)
+    except render.StackInvalid as error:
+        err.print(f"[fail]Refused.[/fail] {error}")
+        raise typer.Exit(2) from None
+
+
+def foreign_images(lock: Lock, platform: str) -> list[str]:
+    """The lock's images with no build for `platform`."""
+    return [name for name in locks.IMAGES if not lock.image(name).runs_on(platform)]
 
 
 @app.command(name="pin")
 def pin_command(
     channel: str = typer.Option(
-        "release", "--channel", "-c", help="`release` (released tags) or `develop`."
+        "develop",
+        "--channel",
+        "-c",
+        help="`develop` (amd64 and arm64) or `release` (amd64 only until the next promotion).",
     ),
     overrides: list[str] = typer.Option(
         [], "--set", help="Resolve NAME from REF instead of the channel's (NAME=REF, repeatable)."
+    ),
+    platform: str | None = typer.Option(
+        None, "--platform", help="The platform the stack will run on. Default: this host's."
     ),
     lock: Path | None = LockOption,
 ) -> None:
@@ -108,6 +162,17 @@ def pin_command(
         err.print(f"[fail]Could not resolve an image.[/fail] {error}")
         err.print("[muted]A private image needs `docker login ghcr.io` first.[/muted]")
         raise typer.Exit(1) from None
+    target_platform = platform or host_platform_name()
+    foreign = foreign_images(pinned, target_platform)
+    if foreign:
+        other = "develop" if channel == "release" else "release"
+        err.print(_lock_table(pinned))
+        err.print(
+            f"[fail]Refused.[/fail] {foreign} have no {target_platform} build on the {channel} "
+            f"channel, so the stack could not run them. Nothing was written. Try "
+            f"`--channel {other}`, or pin for another host with `--platform`."
+        )
+        raise typer.Exit(2)
     target = lock or paths.default_lock()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(locks.dump(pinned))
@@ -131,15 +196,19 @@ def _lock_table(lock: Lock) -> Table:
 
 
 @app.command(name="render")
-def render_command(lock: Path | None = LockOption) -> None:
-    """Write the compose file the stack would run with, and print its path."""
+def render_command(
+    lock: Path | None = LockOption,
+    manifest: Path | None = ManifestOption,
+    bundle: list[Path] = BundleOption,
+) -> None:
+    """Write the compose file `up` would start, and print its path."""
     loaded = _load(lock)
-    out.print(str(render.write(loaded, paths.home() / "stack", paths.secrets_file())))
+    out.print(str(_render(loaded, load_manifest(manifest), _secret_names(bundle))))
 
 
 def _check_platforms(lock: Lock, force: bool) -> None:
     here = host_platform_name()
-    foreign = [name for name in locks.IMAGES if not lock.image(name).runs_on(here)]
+    foreign = foreign_images(lock, here)
     if not foreign:
         return
     message = f"{foreign} have no {here} build in the lock."
@@ -151,21 +220,6 @@ def _check_platforms(lock: Lock, force: bool) -> None:
         "(`proof stack pin --channel develop`), or pass --force."
     )
     raise typer.Exit(2)
-
-
-def _check_secrets() -> None:
-    try:
-        present = secrets.names(paths.secrets_file())
-    except secrets.SecretsFileExposed as error:
-        err.print(f"[fail]Refused.[/fail] {error}")
-        raise typer.Exit(2) from None
-    reconfiguring = sorted(name for name in present if render.reconfigures(name))
-    if reconfiguring:
-        err.print(
-            f"[fail]Refused.[/fail] {reconfiguring} in {paths.secrets_file()} would reconfigure "
-            "Yield or Lens, which load that file. Remove them."
-        )
-        raise typer.Exit(2)
 
 
 def pull_job_images(runner: Runner, lock: Lock) -> None:
@@ -249,18 +303,27 @@ def _explain(compose: Compose, document: dict[str, Any]) -> None:
 @app.command()
 def up(
     lock: Path | None = LockOption,
+    manifest: Path | None = ManifestOption,
+    bundle: list[Path] = BundleOption,
     force: bool = typer.Option(False, "--force", help="Start images built for another platform."),
 ) -> None:
-    """Pull the pinned images, start the stack, seed it, and wait until it is healthy."""
+    """Render the stack, pull its images, start and seed it, and wait until it is healthy."""
     loaded = _load(lock)
+    models = load_manifest(manifest)
     _check_platforms(loaded, force)
-    _check_secrets()
-    compose = compose_for(loaded)
-    document = render.compose(loaded, paths.secrets_file())
+    names = _secret_names(bundle)
+    require(names, "The bundles' runs")
+    if not names:
+        err.print(
+            "[muted]No --bundle: Yield gets no secret, and a run naming a secret_ref is "
+            "refused at its gate.[/muted]"
+        )
+    compose = project(_render(loaded, models, names))
+    document = render.read(compose.file)
     runner = compose.runner
     try:
-        if ensure_network(runner, render.MODELS_NET):
-            err.print(f"[muted]Created the {render.MODELS_NET} network.[/muted]")
+        if ensure_network(runner, models.network):
+            err.print(f"[muted]Created the {models.network} network.[/muted]")
         with err.status("Pulling the stack's images"):
             compose.pull()
         pull_job_images(runner, loaded)
@@ -271,14 +334,14 @@ def up(
         err.print(f"[fail]docker failed.[/fail] {error}")
         _explain(compose, document)
         raise typer.Exit(1) from None
-    out.print(_status_table(_rows(loaded, compose.ps(), document)))
+    out.print(_status_table(_rows(compose.ps(), document)))
     err.print("[ok]The stack is healthy.[/ok]")
 
 
 @app.command()
-def down(lock: Path | None = LockOption) -> None:
+def down() -> None:
     """Stop and remove the stack's containers. The stores and the registry keep their volumes."""
-    compose = compose_for(_load(lock))
+    compose, _ = started()
     try:
         compose.down()
     except ComposeFailed as error:
@@ -287,9 +350,7 @@ def down(lock: Path | None = LockOption) -> None:
     err.print("[ok]Stack stopped.[/ok]")
 
 
-def _rows(
-    lock: Lock, states: dict[str, ServiceState], document: dict[str, Any]
-) -> list[dict[str, Any]]:
+def _rows(states: dict[str, ServiceState], document: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for name, service in document["services"].items():
         expected = str(service["image"])
@@ -340,20 +401,18 @@ def _status_table(rows: list[dict[str, Any]]) -> Table:
 
 @app.command()
 def status(
-    lock: Path | None = LockOption,
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
 ) -> None:
     """Show each service's image digest, state, health and ports."""
-    loaded = _load(lock)
-    compose = compose_for(loaded)
+    compose, document = started()
     try:
         states = compose.ps()
     except ComposeFailed as error:
         err.print(f"[fail]docker compose failed.[/fail] {error}")
         raise typer.Exit(1) from None
-    rows = _rows(loaded, states, render.compose(loaded, paths.secrets_file()))
+    rows = _rows(states, document)
     if as_json:
-        out.print_json(json.dumps({"channel": loaded.channel, "services": rows}))
+        out.print_json(json.dumps({"file": str(compose.file), "services": rows}))
         return
     out.print(_status_table(rows))
 
@@ -361,17 +420,16 @@ def status(
 @app.command()
 def logs(
     service: str,
-    lock: Path | None = LockOption,
     tail: int = typer.Option(200, "--tail", help="How many lines."),
 ) -> None:
     """Print the last lines of one service's logs."""
-    loaded = _load(lock)
-    names = list(render.compose(loaded, paths.secrets_file())["services"])
+    compose, document = started()
+    names = list(document["services"])
     if service not in names:
         err.print(f"[fail]No service {service!r}; the stack has {names}.[/fail]")
         raise typer.Exit(2)
     try:
-        text = compose_for(loaded).logs(service, tail=tail)
+        text = compose.logs(service, tail=tail)
     except ComposeFailed as error:
         err.print(f"[fail]docker compose failed.[/fail] {error}")
         raise typer.Exit(1) from None

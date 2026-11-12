@@ -13,6 +13,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from proof_headless import paths
+
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 
@@ -177,3 +179,9 @@ class Compose:
     def logs(self, service: str, *, tail: int = 200) -> str:
         """The last `tail` lines of one service's logs."""
         return self._call("logs", "--no-color", "--tail", str(tail), service)
+
+
+def appliance(project: str, file: Path, runner: Runner = run) -> Compose:
+    """A compose project of this appliance, with the operator's secrets file as its `--env-file`:
+    compose substitutes the `${NAME}` the file references and nothing else reaches a container."""
+    return Compose(project=project, file=file, env_file=paths.secrets_file(), runner=runner)
