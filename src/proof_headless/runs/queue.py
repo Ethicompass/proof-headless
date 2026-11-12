@@ -21,11 +21,12 @@ one's `failed`; the run keeps its slot meanwhile.
 A run advances while its phase or counts move or its driver logs a new line: the last
 conversations of a run can keep its closed count flat for many minutes while its driver calls the
 model every few seconds. A run that does neither for its stall bound is read by its driver
-container. While the driver runs, the run is busy or hung inside Yield's own process, and a re-POST
-would only be answered 202: the quiet is reported, again each time it lasts another bound, and the
-run is followed. When the driver is gone, or the containers cannot be read, it is posted again the
-same way as a failed run, up to `stall_resubmits` times, and then closed as `stalled` so the queue
-ends. A measuring run is never re-posted: a stalled measure is reported.
+container. While the driver runs, or may run because the containers cannot be read, the run is
+busy or hung inside Yield's own process, and a re-POST would only be answered 202: the quiet is
+reported, again each time it lasts another bound, and the run is followed. Only when the listing
+shows the driver gone is it posted again the same way as a failed run, up to `stall_resubmits`
+times, and then closed as `stalled` so the queue ends. A measuring run is never re-posted: a
+stalled measure is reported.
 """
 
 from __future__ import annotations
@@ -100,6 +101,11 @@ def read_specs(directory: Path, only: Iterable[str] = ()) -> dict[str, Path]:
     return {run: found[run] for run in wanted} if wanted else found
 
 
+STALL_FLOOR = timedelta(minutes=5)
+"""The shortest stall bound a budget can set: a bound of a few polls would read a run as stalled
+between two looks at its driver's log."""
+
+
 def wall_budget(path: Path) -> timedelta | None:
     """The `budget.max_wall_seconds` of the spec at `path`, when it sets one.
 
@@ -159,7 +165,7 @@ class Queue:
             source = kept if kept.exists() else self.specs.get(entry.run_id)
             budget = wall_budget(source) if source is not None else None
             if budget is not None and budget < self.policy.stall_after:
-                self.detector.stall_limits[entry.run_id] = budget
+                self.detector.stall_limits[entry.run_id] = max(budget, STALL_FLOOR)
         self.detector.since = parse(self.state.observed_at or self.state.started_at)
         self.detector.read_until.update(
             {name: parse(mark) for name, mark in self.state.log_marks.items()}
@@ -426,17 +432,19 @@ class Queue:
         return self.detector.stall_limits.get(run_id, self.policy.stall_after)
 
     def _silent(self, entry: Entry, quiet: timedelta, limit: timedelta) -> None:
-        """Report a run whose driver runs but whose counts and log stand still, once per bound
-        it lasts. It is not posted again, since Yield answers 202 while a driver lives, and not
-        closed, since Yield may still finish it."""
+        """Report a run whose driver runs, or may run, but whose counts and log stand still, once
+        per bound it lasts. It is not posted again, since Yield answers 202 while a driver lives,
+        and not closed, since Yield may still finish it. Where the containers cannot be read the
+        queue does not end on its own: the operator reads the reports and stops it."""
         if quiet < limit * (entry.silent_reports + 1):
             return
         entry.silent_reports += 1
         minutes = int(quiet.total_seconds() // 60)
+        why = "its driver runs" if entry.driver else "the driver's container cannot be read"
         self.log(
             "driver_silent",
             f"no progress and no driver log line for {minutes} min ({entry.progress}) while "
-            f"its driver runs; not posted again, still following it",
+            f"{why}; not posted again, still following it",
             severity=Severity.WARNING,
             run_id=entry.run_id,
         )
@@ -448,7 +456,7 @@ class Queue:
         limit = self._stall_limit(entry.run_id)
         if quiet < limit:
             return
-        if entry.driver == "running":
+        if entry.driver in (None, "running"):
             self._silent(entry, quiet, limit)
             return
         minutes = int(quiet.total_seconds() // 60)

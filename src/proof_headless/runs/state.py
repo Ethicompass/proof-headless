@@ -103,8 +103,8 @@ class Entry(BaseModel):
     """Re-POSTs after the run stopped advancing before measuring."""
     driver: str | None = None
     """The state of the run's driver container at the queue's last look (`running`, `exited`,
-    `absent`, ...), `None` when the containers could not be read. A run whose driver runs is
-    never re-posted nor closed as stalled."""
+    `absent`, ...), `None` when the containers could not be read. A run whose driver runs, or
+    may run, is never re-posted nor closed as stalled."""
     silent_reports: int = 0
     """How many times the current quiet stretch was reported while the driver ran."""
     submit_failures: int = 0
