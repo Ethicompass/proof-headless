@@ -12,10 +12,12 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from proof_headless import paths
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+ONE_OFF_LABEL = "com.docker.compose.oneoff"
 
 
 def run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -58,6 +60,15 @@ def _published(publishers: object) -> tuple[str, ...]:
         host = f"{entry.get('URL') or '0.0.0.0'}:{entry['PublishedPort']}"
         ports.append(f"{host}->{entry.get('TargetPort')}/{entry.get('Protocol') or 'tcp'}")
     return tuple(dict.fromkeys(ports))
+
+
+def _one_off(labels: object) -> bool:
+    """Whether `ps` labels (a `k=v,k=v` string, or a mapping) mark a one-off `run` container."""
+    if isinstance(labels, dict):
+        return str(labels.get(ONE_OFF_LABEL, "")).lower() == "true"
+    if isinstance(labels, str):
+        return f"{ONE_OFF_LABEL}=True" in labels.split(",")
+    return False
 
 
 class ComposeFailed(RuntimeError):
@@ -130,25 +141,38 @@ class Compose:
         longer declares, keeping caches and volumes."""
         self._call("down", "--remove-orphans")
 
-    def ps(self) -> dict[str, ServiceState]:
-        """Every service that has a container, by name."""
-        output = self._call("ps", "--all", "--format", "json")
-        states: dict[str, ServiceState] = {}
+    def _rows(self, *services: str) -> list[dict[str, Any]]:
+        """`ps --all` rows of the services' own containers, one-off `run` containers left out.
+
+        A `run` container (`proof models pull`) carries its service's name, so without this a
+        status read while a download runs could report the downloader in place of the server.
+        Compose's `--filter` only knows `status`, so the one-off label is read from each row.
+        """
+        output = self._call("ps", "--all", "--format", "json", *services)
+        rows: list[dict[str, Any]] = []
         for line in output.splitlines():
             line = line.strip()
             if not line:
                 continue
-            rows = json.loads(line)
-            for row in rows if isinstance(rows, list) else [rows]:
-                state = str(row.get("State", ""))
-                states[row["Service"]] = ServiceState(
-                    service=row["Service"],
-                    state=state,
-                    health=str(row.get("Health", "")),
-                    image=str(row.get("Image", "")),
-                    ports=_published(row.get("Publishers")),
-                    exit_code=int(row.get("ExitCode", 0)) if state in {"exited", "dead"} else None,
-                )
+            parsed = json.loads(line)
+            for row in parsed if isinstance(parsed, list) else [parsed]:
+                if not _one_off(row.get("Labels")):
+                    rows.append(row)
+        return rows
+
+    def ps(self) -> dict[str, ServiceState]:
+        """Every service that has a container, by name."""
+        states: dict[str, ServiceState] = {}
+        for row in self._rows():
+            state = str(row.get("State", ""))
+            states[row["Service"]] = ServiceState(
+                service=row["Service"],
+                state=state,
+                health=str(row.get("Health", "")),
+                image=str(row.get("Image", "")),
+                ports=_published(row.get("Publishers")),
+                exit_code=int(row.get("ExitCode", 0)) if state in {"exited", "dead"} else None,
+            )
         return states
 
     def up_all(self) -> None:
@@ -160,6 +184,15 @@ class Compose:
         """Pull every service's image, so a slow download is not mistaken for a slow start."""
         self._call("pull", "--quiet")
 
+    def run_once(self, service: str, entrypoint: str, *args: str) -> str:
+        """Run `entrypoint args` once in a throwaway container of `service`, with its image,
+        environment and volumes, and return what it printed. No ports are published and the
+        service's own container, if any, is left alone; `ps` and `restarts` leave the one-off
+        container out, so a status read meanwhile still describes the server."""
+        return self._call(
+            "run", "--rm", "--no-deps", "-T", "--entrypoint", entrypoint, service, *args
+        )
+
     def restarts(self, service: str) -> Restarts:
         """The service's container and how many times its restart policy restarted it.
 
@@ -168,7 +201,7 @@ class Compose:
         immediately and is seldom caught in `restarting`. The count belongs to one container, so
         it comes with that container's id. No container is no restarts.
         """
-        ids = self._call("ps", "--all", "--quiet", service).split()
+        ids = [str(row["ID"]) for row in self._rows(service) if row.get("ID")]
         if not ids:
             return Restarts(container=None, count=0)
         result = self.runner(["docker", "inspect", "--format", "{{.RestartCount}}", ids[0]])

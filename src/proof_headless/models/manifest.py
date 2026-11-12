@@ -75,7 +75,9 @@ class ModelEntry(BaseModel):
     mounts: tuple[Mount, ...] = ()
     start_period_seconds: int = Field(default=1200, ge=0)
     """How long the health check waits before counting failures: download plus load plus
-    compilation, which for a 30B model on first start is tens of minutes."""
+    compilation, which for a 30B model on first start is tens of minutes. A first start may
+    outlast it on a slow link; `proof models up` keeps waiting on a running container for a
+    further `--grace` and only fails a model that exits, restarts or misses that deadline."""
     reasoning_switch: str | None = None
     """The `chat_template_kwargs` key that turns the model's reasoning on and off, when it has
     one (`enable_thinking` for the Nemotron chat templates). Run specs use it to ask one served
