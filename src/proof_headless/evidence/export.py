@@ -39,14 +39,18 @@ LAYOUT: tuple[tuple[str, str], ...] = (
         "The run's objects in Yield's store: spec, traces (`jsonl.zst`), dataset, sessions, and "
         "metric outputs not yet delivered",
     ),
+    ("runs/<run>/yield/probe-set.json", "The probe set the run's `probes.json` points at"),
     ("runs/<run>/lens/status.json", "Lens's status of the run the delivery derived"),
     ("runs/<run>/lens/result.json", "The Lens result (`GET /artifacts/{result_ref}`)"),
+    ("lens/kills/", "Records `proof lens run` kept of dead lens-run containers it removed"),
 )
 
 NOTES = """\
 Secrets: the export was refused if any value of the operator's secrets file appeared in any file,
-as written or JSON-escaped. Traces are stored zstd-compressed and were scanned as stored, so a
-value inside a compressed stream is not covered by that check.
+as written, JSON-escaped, percent-encoded or base64-encoded (standard or URL-safe), or if a zstd
+file did not decompress; zstd files, the traces among them, were scanned decompressed. Values
+shorter than 8 characters were not looked for, and `index.json` names those secrets under
+`unscanned_secrets`. Hex encodings and values split across fields were not looked for.
 
 Not in this package: the raw metric outputs Yield already delivered to Lens (Yield removes them
 from its store once delivered; they live in Lens's inbox, which its API does not serve), and
@@ -88,11 +92,15 @@ def readme(index: Mapping[str, Any]) -> str:
 
 
 class Refused(RuntimeError):
-    """The package was not written. `leaks` names each file and secret that stopped it."""
+    """The package was not written. `leaks` names each file and secret that stopped it, and
+    `unreadable` each zstd file that could not be scanned."""
 
-    def __init__(self, message: str, leaks: list[Leak] | None = None) -> None:
+    def __init__(
+        self, message: str, leaks: list[Leak] | None = None, unreadable: list[str] | None = None
+    ) -> None:
         super().__init__(message)
         self.leaks = leaks or []
+        self.unreadable = unreadable or []
 
 
 def export(collector: Collector, destination: Path, secrets: Mapping[str, str]) -> dict[str, Any]:
@@ -106,11 +114,26 @@ def export(collector: Collector, destination: Path, secrets: Mapping[str, str]) 
         collector.root = staging
         collector.collect()
         index = collector.index()
+        index["unscanned_secrets"] = sorted(
+            name
+            for name, value in secrets.items()
+            if value and len(value) < package.MIN_SECRET_LENGTH
+        )
         (staging / "index.json").write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n")
         (staging / "README.md").write_text(readme(index))
-        leaks = package.scan(staging, secrets)
-        if leaks:
-            raise Refused("a secret's value appears in the exported files", leaks)
+        findings = package.scan(staging, secrets)
+        if findings.leaks:
+            raise Refused(
+                "a secret's value appears in the exported files",
+                findings.leaks,
+                findings.unreadable,
+            )
+        if findings.unreadable:
+            raise Refused(
+                "a compressed file does not decompress, so it cannot be scanned",
+                [],
+                findings.unreadable,
+            )
         package.write_sums(staging)
         staging.rename(destination)
     except BaseException:

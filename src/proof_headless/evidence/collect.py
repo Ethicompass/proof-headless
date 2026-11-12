@@ -6,16 +6,15 @@ than stopping the export, because a package that says plainly what it lacks is e
 that was never written because a single source was down is none. The checksums and the secret
 scan are what make a package acceptable, not its completeness.
 
-Each run is the Yield run of the client's queue state, or of its rendered specs when nothing was
-queued. A run's Lens ids are the derived ones (Lens `derive.project_id_for`): `decl-` and the
-first twenty hex of the declaration its spec pins, and the Yield run's own id.
+The runs, and the Lens ids each run's delivery derives, come from `proof_headless.lens.runs`, the
+module `proof lens` reads them with, so the package and `proof lens status` always agree on which
+runs a client has: a queue state or specs that do not read refuse the export rather than leave a
+run out silently.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -27,14 +26,15 @@ import httpx
 from proof_headless import __version__, paths
 from proof_headless.docker import Runner
 from proof_headless.evidence.s3 import Store, StoreUnavailable
+from proof_headless.lens import runs as yield_runs
+from proof_headless.lens.runs import RunsUnknown, YieldRun
 from proof_headless.models import manifest as manifests
 from proof_headless.models.manifest import ManifestInvalid
 
-_DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
-
 
 class NothingToExport(ValueError):
-    """The client has no receipt, no specs and no queue under `$PROOF_HOME`."""
+    """The client's runs cannot be listed: nothing under `$PROOF_HOME`, or a queue state or spec
+    that does not read."""
 
 
 @dataclass(frozen=True)
@@ -99,37 +99,41 @@ class Collector:
             return None
         return response
 
+    def _fetch_json(self, url: str, what: str) -> tuple[httpx.Response, Any] | None:
+        """The answer and its JSON, or `None` with a gap when either is missing."""
+        response = self._fetch(url, what)
+        if response is None:
+            return None
+        try:
+            return response, response.json()
+        except ValueError:
+            self.gap(what, "answered something that is not JSON")
+            return None
+
     def collect(self) -> None:
         """Everything, in the package's order."""
-        run_ids = self.run_ids()
+        runs = self.yield_runs()
         self.bundle()
         self.appliance()
         self.doctor()
-        for run_id in run_ids:
-            self.run(run_id)
+        self.kills()
+        for run in runs:
+            self.run(run)
 
-    def run_ids(self) -> list[str]:
-        queue = self.state / "queue.json"
-        specs = self.state / "specs"
-        if queue.is_file():
-            document = json.loads(queue.read_text())
-            entries = document.get("runs") if isinstance(document, dict) else document
-            if isinstance(entries, dict):
-                entries = list(entries)
-            ids: list[str] = []
-            for entry in entries or []:
-                run_id = entry.get("run_id") if isinstance(entry, dict) else entry
-                if isinstance(run_id, str) and run_id and run_id not in ids:
-                    ids.append(run_id)
-            return ids
-        if specs.is_dir():
-            return [path.stem for path in sorted(specs.glob("*.json"))]
-        if (self.state / "receipt.json").is_file():
+    def yield_runs(self) -> list[YieldRun]:
+        """The client's runs, each one's Lens project read once here, so a declaration that is
+        not a digest refuses the export before anything is copied, as `proof lens` refuses it."""
+        queued = (self.state / "queue.json").is_file() or (self.state / "specs").is_dir()
+        if not queued and (self.state / "receipt.json").is_file():
             self.gap("runs", "no queue state and no rendered specs; no run to export")
             return []
-        raise NothingToExport(
-            f"client {self.client} has nothing under {self.state}: no receipt, specs or queue"
-        )
+        try:
+            runs = yield_runs.client_runs(self.client)
+            for run in runs:
+                run.project_id  # noqa: B018
+        except RunsUnknown as error:
+            raise NothingToExport(str(error)) from None
+        return runs
 
     def bundle(self) -> None:
         if not self._copy(self.state / "receipt.json", "bundle/receipt.json"):
@@ -187,8 +191,8 @@ class Collector:
         versions: dict[str, Any] = {}
         for model in loaded.models:
             url = f"http://{self.endpoints.model_host}:{model.port}/version"
-            response = self._fetch(url, f"server version of {model.name}")
-            versions[model.name] = response.json() if response is not None else None
+            answer = self._fetch_json(url, f"server version of {model.name}")
+            versions[model.name] = answer[1] if answer is not None else None
         self._json("appliance/vllm-versions.json", versions)
 
     def doctor(self) -> None:
@@ -198,14 +202,13 @@ class Collector:
         for report in reports:
             self._copy(report, f"doctor/{report.name}")
 
-    def _declaration(self, run_id: str) -> str | None:
-        spec = self.state / "specs" / f"{run_id}.json"
-        if not spec.is_file():
-            return None
-        value = json.loads(spec.read_text()).get("target_declaration")
-        return str(value) if value else None
+    def kills(self) -> None:
+        """The records `proof lens run` kept of dead lens-run containers before removing them."""
+        for record in sorted((self.state / "lens" / "kills").glob("*.json")):
+            self._copy(record, f"lens/kills/{record.name}")
 
-    def run(self, run_id: str) -> None:
+    def run(self, run: YieldRun) -> None:
+        run_id = run.run_id
         base = f"runs/{run_id}"
         entry: dict[str, Any] = {"run_id": run_id}
         yield_api = self.endpoints.yield_api.rstrip("/")
@@ -217,18 +220,17 @@ class Collector:
         if result is not None:
             self._write(f"{base}/yield/manifest.json", result.content)
         entry["store_objects"] = self.objects(run_id, base)
-        declaration = self._declaration(run_id)
-        match = _DIGEST.match(declaration or "")
-        if match:
-            project = "decl-" + match.group(1)[:20]
-        else:
-            project = "undeclared-" + hashlib.sha256(run_id.encode()).hexdigest()[:16]
-        entry["lens"] = {"project_id": project, "run_id": run_id, "result": None}
+        entry["probe_set"] = self.probe_set(run_id, base)
+        project, lens_run = run.project_id, run.lens_run_id
+        entry["lens"] = {"project_id": project, "run_id": lens_run, "result": None}
         lens_api = self.endpoints.lens_api.rstrip("/")
-        lens = self._fetch(f"{lens_api}/projects/{project}/runs/{run_id}", f"{run_id}: Lens status")
+        lens = self._fetch_json(
+            f"{lens_api}/projects/{project}/runs/{lens_run}", f"{run_id}: Lens status"
+        )
         if lens is not None:
-            self._write(f"{base}/lens/status.json", lens.content)
-            ref = lens.json().get("result_ref")
+            response, document = lens
+            self._write(f"{base}/lens/status.json", response.content)
+            ref = document.get("result_ref") if isinstance(document, dict) else None
             if not ref:
                 self.gap(f"{run_id}: Lens result", "the Lens run has no result; see `proof lens`")
             else:
@@ -237,6 +239,25 @@ class Collector:
                     self._write(f"{base}/lens/result.json", artifact.content)
                     entry["lens"]["result"] = ref
         self.runs.append(entry)
+
+    def probe_set(self, run_id: str, base: str) -> bool:
+        """Copy the probe set the run's `probes.json` points at, a blob outside the run's prefix
+        that two runs over the same knowledge base and catalogue share (Yield `layout.blob`)."""
+        pointer = self.root / base / "yield" / "store" / "probes.json"
+        if self.store is None or not pointer.is_file():
+            return False
+        what = f"{run_id}: probe set"
+        try:
+            digest = str(json.loads(pointer.read_text())["digest"]).removeprefix("sha256:")
+        except (ValueError, KeyError, TypeError):
+            self.gap(what, "probes.json names no digest")
+            return False
+        try:
+            self._write(f"{base}/yield/probe-set.json", self.store.get(f"blobs/{digest}"))
+        except StoreUnavailable as error:
+            self.gap(what, str(error))
+            return False
+        return True
 
     def objects(self, run_id: str, base: str) -> int:
         """Copy the run's objects out of Yield's store; how many."""

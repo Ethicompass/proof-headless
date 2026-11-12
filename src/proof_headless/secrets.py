@@ -48,18 +48,7 @@ def names(path: Path) -> frozenset[str]:
     `NAME=` defines nothing: compose would substitute an empty string, and a gated download
     would fail minutes later with a 401 instead of being refused here. An absent file defines none.
     """
-    if not path.exists():
-        return frozenset()
-    check_private(path)
-    defined: set[str] = set()
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, value = line.removeprefix("export ").partition("=")
-        if name.strip() and _value(value):
-            defined.add(name.strip())
-    return frozenset(defined)
+    return frozenset(values(path))
 
 
 def values(path: Path) -> dict[str, str]:

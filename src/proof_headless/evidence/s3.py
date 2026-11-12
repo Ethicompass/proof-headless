@@ -52,7 +52,11 @@ def sign(
     credentials: Credentials,
     now: datetime,
 ) -> dict[str, str]:
-    """The headers that sign an empty-bodied request to `url` with `query` (SigV4, service s3)."""
+    """The headers that sign an empty-bodied request to `url` with `query` (SigV4, service s3).
+
+    `url`'s path is the object's path as it is, not yet percent-encoded: it is encoded here, once,
+    which is how S3 canonicalizes it.
+    """
     parts = urlsplit(url)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     day = stamp[:8]
@@ -102,7 +106,7 @@ class Store:
 
     def _get(self, path: str, query: dict[str, str]) -> httpx.Response:
         url = f"{self.endpoint}{_encoded(path, safe='/-_.~')}"
-        headers = sign("GET", url, query, self.credentials, datetime.now(UTC))
+        headers = sign("GET", f"{self.endpoint}{path}", query, self.credentials, datetime.now(UTC))
         encoded = "&".join(f"{_encoded(k)}={_encoded(v)}" for k, v in sorted(query.items()))
         try:
             response = self.client.get(url + (f"?{encoded}" if encoded else ""), headers=headers)

@@ -89,7 +89,14 @@ def export_command(
             err.print(f"[fail]Refused.[/fail] {escape(str(refused))}; nothing was written.")
             for leak in refused.leaks:
                 err.print(f"  [name]{escape(leak.path)}[/name] holds the value of {leak.secret}")
+            for path in refused.unreadable:
+                err.print(f"  [name]{escape(path)}[/name] does not decompress")
             raise typer.Exit(1) from None
+    for name in index["unscanned_secrets"]:
+        err.print(
+            f"[warn]not scanned[/warn] {name}: its value is shorter than "
+            f"{package.MIN_SECRET_LENGTH} characters, too short to match without false refusals"
+        )
     if as_json:
         out.print_json(json.dumps({**index, "path": str(target)}))
     else:
