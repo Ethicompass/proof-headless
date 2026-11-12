@@ -15,10 +15,12 @@ import typer
 from rich.table import Table
 
 from proof_headless import __version__
+from proof_headless.bundle.commands import app as bundle_app
 from proof_headless.console import out
 from proof_headless.doctor import doctor
 from proof_headless.models.commands import app as models_app
 from proof_headless.secrets_commands import app as secrets_app
+from proof_headless.spec.commands import app as spec_app
 from proof_headless.stack.commands import app as stack_app
 
 app = typer.Typer(
@@ -40,6 +42,8 @@ def interactive() -> bool:
 
 
 app.add_typer(models_app, name="models")
+app.add_typer(bundle_app, name="bundle")
+app.add_typer(spec_app, name="spec")
 app.add_typer(stack_app, name="stack")
 app.add_typer(secrets_app, name="secrets")
 app.command()(doctor)

@@ -1,0 +1,5 @@
+{
+  "request": {"path": "/chat", "body": {"message": "{query}", "session_id": "{session}"}},
+  "session": {"from_response": ["/session_id"]},
+  "answer": {"protocol": "json_sync", "content": ["/reply"]}
+}
