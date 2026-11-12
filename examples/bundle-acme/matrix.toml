@@ -1,0 +1,6 @@
+# The run matrix `proof spec render` reads (#6).
+[[runs]]
+id = "r1-disclosure"
+catalogue = "acme-support"
+strategies = []
+replicas = 1

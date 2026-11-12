@@ -20,5 +20,6 @@ of a pull request. Do not add `Co-Authored-By` trailers.
 
 - Everything is in English: code, commits, pull requests, docs and ADRs.
 - Explain why something is the way it is in docstrings, not in `#` comments that narrate the code.
-- Nothing in the code names a client, a model id or an endpoint. Those belong in manifests and bundles.
+- Nothing in the code names a client, a model id or a client's endpoint. Those belong in manifests
+  and bundles. Defaults may name the appliance's own loopback services (`127.0.0.1:8081`).
 - Every command renders with Rich, and read commands also take `--json`.
