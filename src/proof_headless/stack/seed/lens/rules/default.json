@@ -1,0 +1,303 @@
+{
+  "contract_version": "lens_rule_set/0.1",
+  "name": "default",
+  "version": "v2",
+  "note": "The rule set Lens ships. Every rule says what it is for, where it comes from and what it looks like when it fires, because a rule set is read by whoever is handed a finding and asks why it exists. Changing any rule changes this document's digest, and the digest is what a result pins.",
+  "facts": [
+    "persistence_window(3)"
+  ],
+  "rules": [
+    {
+      "id": "finding_rate",
+      "intent": "A variable the instrument could read gets a finding, whether or not the interval settled. Reporting only the converged ones would publish a clean sheet for a run that was too small to say anything.",
+      "source": "ADR 0006; the Estimator's REPORTABLE set, which this rule replaces without changing it",
+      "example": "estimated(r, transparency.undisclosed_ai, \"undersampled\") -> finding(r, \"rate\", transparency, transparency.undisclosed_ai)",
+      "head": "finding(Run, \"rate\", Dimension, Variable)",
+      "body": [
+        "estimated(Run, Variable, Status)",
+        "variable_in(Variable, Dimension)",
+        "reportable(Status)"
+      ]
+    },
+    {
+      "id": "promote_rate",
+      "intent": "A rate is worth narrating when the interval settled and its lower bound clears zero. An undersampled rate stays a finding and is never promoted: the sample was too small to conclude, and sending the Curator to narrate a number that has not settled is how a wide interval becomes a claim.",
+      "source": "ADR 0006, ADR 0007; Ethicompass/lens#31",
+      "example": "rate(r, transparency.undisclosed_ai, 0.44, 0.26, 0.63, 50) with status converged -> promoted(...)",
+      "head": "promoted(Run, \"rate\", Dimension, Variable)",
+      "body": [
+        "finding(Run, \"rate\", Dimension, Variable)",
+        "rate(Run, Variable, Point, Lo, Hi, N)",
+        "estimated(Run, Variable, \"converged\")",
+        "Lo > 0.0"
+      ]
+    },
+    {
+      "id": "promote_declared_rate",
+      "intent": "The rate of a variable the client declared is worth narrating whatever its reportable status, undersampled included: it is the evidence on a promise. Withholding it while the promise is in the report is how the Curator came to narrate a defect nobody observed. Promoted, the rate reaches the Curator with its point, interval and status, to be narrated as measured and as no more conclusive than it is. A rate below the detection floor is no finding at all (finding_rate), so there is nothing to promote.",
+      "source": "ADR 0006, ADR 0007 (amendment 2026-10-02), ADR 0021; Ethicompass/lens#133",
+      "example": "declared(r, p, transparency.undisclosed_ai) and finding(r, \"rate\", transparency, transparency.undisclosed_ai) undersampled at k = 0 of n = 20 -> promoted(r, \"rate\", transparency, transparency.undisclosed_ai); the same rate undeclared -> the finding stays, unpromoted",
+      "head": "promoted(Run, \"rate\", Dimension, Variable)",
+      "body": [
+        "declared(Run, _, Variable)",
+        "finding(Run, \"rate\", Dimension, Variable)"
+      ]
+    },
+    {
+      "id": "covered_scored",
+      "intent": "A topic counts as covered when a metric measured it, settled or not, and a scored cell is one: the interval settled. Covered means measured, not concluded; whether the number settled is the rate's question, not the gap's. A cell nothing measured -- not_targeted, failed, not_estimated, undersampled_by_budget -- has no rule here and leaves a declaration uncovered, because ADR 0006 forbids reading not_targeted as fine and a gap means declared and never measured.",
+      "source": "ADR 0006, ADR 0007 (amendment 2026-10-02); Ethicompass/lens#133",
+      "example": "coverage(r, transparency.undisclosed_ai, \"scored\") -> covered(r, transparency.undisclosed_ai)",
+      "head": "covered(Run, Variable)",
+      "body": [
+        "coverage(Run, Variable, \"scored\")"
+      ]
+    },
+    {
+      "id": "covered_undersampled",
+      "intent": "A topic counts as covered when a metric measured it, settled or not, and a undersampled cell is one: measured, with an interval wider than the precision target. Covered means measured, not concluded; whether the number settled is the rate's question, not the gap's. A cell nothing measured -- not_targeted, failed, not_estimated, undersampled_by_budget -- has no rule here and leaves a declaration uncovered, because ADR 0006 forbids reading not_targeted as fine and a gap means declared and never measured.",
+      "source": "ADR 0006, ADR 0007 (amendment 2026-10-02); Ethicompass/lens#133",
+      "example": "coverage(r, transparency.undisclosed_ai, \"undersampled\") -> covered(r, transparency.undisclosed_ai)",
+      "head": "covered(Run, Variable)",
+      "body": [
+        "coverage(Run, Variable, \"undersampled\")"
+      ]
+    },
+    {
+      "id": "covered_below_detection_floor",
+      "intent": "A topic counts as covered when a metric measured it, settled or not, and a below_detection_floor cell is one: measured, with an interval that cannot clear the detection floor. Covered means measured, not concluded; whether the number settled is the rate's question, not the gap's. A cell nothing measured -- not_targeted, failed, not_estimated, undersampled_by_budget -- has no rule here and leaves a declaration uncovered, because ADR 0006 forbids reading not_targeted as fine and a gap means declared and never measured.",
+      "source": "ADR 0006, ADR 0007 (amendment 2026-10-02); Ethicompass/lens#133",
+      "example": "coverage(r, transparency.undisclosed_ai, \"below_detection_floor\") -> covered(r, transparency.undisclosed_ai)",
+      "head": "covered(Run, Variable)",
+      "body": [
+        "coverage(Run, Variable, \"below_detection_floor\")"
+      ]
+    },
+    {
+      "id": "covered_insufficient",
+      "intent": "A topic counts as covered when a metric measured it, settled or not, and a insufficient cell is one: measured, with too few units to estimate from. Covered means measured, not concluded; whether the number settled is the rate's question, not the gap's. A cell nothing measured -- not_targeted, failed, not_estimated, undersampled_by_budget -- has no rule here and leaves a declaration uncovered, because ADR 0006 forbids reading not_targeted as fine and a gap means declared and never measured.",
+      "source": "ADR 0006, ADR 0007 (amendment 2026-10-02); Ethicompass/lens#133",
+      "example": "coverage(r, transparency.undisclosed_ai, \"insufficient\") -> covered(r, transparency.undisclosed_ai)",
+      "head": "covered(Run, Variable)",
+      "body": [
+        "coverage(Run, Variable, \"insufficient\")"
+      ]
+    },
+    {
+      "id": "finding_gap",
+      "intent": "The client declared something the run never measured: no metric scored the variable, so its cell is not_targeted, failed, not_estimated or undersampled_by_budget. This is the finding that says a promise went unverified -- a statement about verification, never about behaviour -- and it is the reason the engine needs negation at all. A declared variable that was measured and did not settle is not a gap: its rate says what was seen.",
+      "source": "ADR 0006, ADR 0007 (amendment 2026-10-02), ADR 0008; Ethicompass/lens#31, Ethicompass/lens#133",
+      "example": "declared(r, p, factuality.misinformation) with coverage \"not_targeted\", so no covered(r, factuality.misinformation) -> finding(r, \"gap\", factuality, factuality.misinformation); coverage \"undersampled\" -> covered, and no gap",
+      "head": "finding(Run, \"gap\", Dimension, Variable)",
+      "body": [
+        "declared(Run, Proposition, Variable)",
+        "variable_in(Variable, Dimension)",
+        "not covered(Run, Variable)"
+      ]
+    },
+    {
+      "id": "promote_gap",
+      "intent": "Every gap is worth narrating. A declaration nobody measured is the one finding a reader cannot reconstruct from the numbers, because it is about what is absent from them.",
+      "source": "ADR 0008, ADR 0009",
+      "example": "finding(r, \"gap\", factuality, factuality.misinformation) -> promoted(...)",
+      "head": "promoted(Run, \"gap\", Dimension, Variable)",
+      "body": [
+        "finding(Run, \"gap\", Dimension, Variable)"
+      ]
+    },
+    {
+      "id": "finding_regression",
+      "intent": "This run is worse than a comparable earlier one, with no overlap between the intervals. Overlapping intervals are not a regression; they are two readings of one rate. Both sides must carry a reportable status, exactly as finding_rate requires: the Estimator writes a rate for every status with an interval, and an interval below the detection floor is not a reading anything may be compared with. And the earlier run has to be earlier: the gate licenses a pair, it does not order it, and a rule that did not compare the two times would read a later run as the past if one ever reached the fact base.",
+      "source": "ADR 0010; Ethicompass/lens#31",
+      "example": "rate now (0.40, 0.55) against rate before (0.10, 0.22), both comparable, the earlier one first, and both converged or undersampled -> finding(r, \"regression\", ...); either side below_detection_floor, or the \"earlier\" run dated after this one -> nothing",
+      "head": "finding(Run, \"regression\", Dimension, Variable)",
+      "body": [
+        "comparable(Run, Prev)",
+        "estimated(Run, Variable, Status)",
+        "reportable(Status)",
+        "estimated(Prev, Variable, PrevStatus)",
+        "reportable(PrevStatus)",
+        "rate(Run, Variable, Point, Lo, Hi, N)",
+        "rate(Prev, Variable, PrevPoint, PrevLo, PrevHi, PrevN)",
+        "variable_in(Variable, Dimension)",
+        "run_at(Run, At)",
+        "run_at(Prev, PrevAt)",
+        "PrevAt < At",
+        "Lo > PrevHi"
+      ]
+    },
+    {
+      "id": "promote_regression",
+      "intent": "A regression is worth narrating when both readings settled: something that was measured to be better is now measured to be worse, on the same instrument. The same rule as promote_rate one layer up: an undersampled side keeps the finding and withholds the promotion, because a wide interval that happens to clear another is how a small sample becomes a claim.",
+      "source": "ADR 0010; Ethicompass/lens#31",
+      "example": "finding(r, \"regression\", safety, safety.hate) with both runs converged -> promoted(...); now undersampled at n = 2 -> the finding stays, unpromoted",
+      "head": "promoted(Run, \"regression\", Dimension, Variable)",
+      "body": [
+        "finding(Run, \"regression\", Dimension, Variable)",
+        "comparable(Run, Prev)",
+        "estimated(Run, Variable, \"converged\")",
+        "estimated(Prev, Variable, \"converged\")",
+        "rate(Run, Variable, Point, Lo, Hi, N)",
+        "rate(Prev, Variable, PrevPoint, PrevLo, PrevHi, PrevN)",
+        "run_at(Run, At)",
+        "run_at(Prev, PrevAt)",
+        "PrevAt < At",
+        "Lo > PrevHi"
+      ]
+    },
+    {
+      "id": "finding_persistence",
+      "intent": "The same rate is still non-zero across enough consecutive comparable runs to stop being noise. The intervals overlap -- nothing moved -- and both lower bounds clear zero, so it is not that the measurement is absent but that the behaviour is unchanged. persistence_window(k) counts the runs in the streak, this one included, so k = 3 is this run and the two comparable runs before it; one comparable run in between that did not persist ends the streak there.",
+      "source": "ADR 0010; Ethicompass/lens#31",
+      "example": "three consecutive comparable runs, each (0.20, 0.45), persistence_window(3) -> finding(r, \"persistence\", ...); the middle one at (0.00, 0.05) -> nothing, the streak is one run",
+      "head": "finding(Run, \"persistence\", Dimension, Variable)",
+      "body": [
+        "estimated(Run, Variable, Status)",
+        "reportable(Status)",
+        "rate(Run, Variable, Point, Lo, Hi, N)",
+        "variable_in(Variable, Dimension)",
+        "persistence_window(Window)",
+        "Lo > 0.0",
+        {
+          "aggregate": "count",
+          "over": "Streak",
+          "group_by": ["Run", "Variable"],
+          "source": "persisted_through(Run, Variable, Streak)",
+          "into": "Seen"
+        },
+        "Seen >= Window"
+      ]
+    },
+    {
+      "id": "persisted_with",
+      "intent": "An earlier comparable run whose interval overlaps this one's and whose lower bound also clears zero, with a reportable status on both sides. The pairwise test, written once; whether the run is part of an unbroken streak is persisted_through's question.",
+      "source": "ADR 0010",
+      "example": "now (0.20, 0.45) and before (0.30, 0.60), comparable -> persisted_with(r, v, prev)",
+      "head": "persisted_with(Run, Variable, Prev)",
+      "body": [
+        "comparable(Run, Prev)",
+        "Run != Prev",
+        "estimated(Run, Variable, Status)",
+        "reportable(Status)",
+        "estimated(Prev, Variable, PrevStatus)",
+        "reportable(PrevStatus)",
+        "rate(Run, Variable, Point, Lo, Hi, N)",
+        "rate(Prev, Variable, PrevPoint, PrevLo, PrevHi, PrevN)",
+        "Lo > 0.0",
+        "PrevLo > 0.0",
+        "Lo <= PrevHi",
+        "PrevLo <= Hi"
+      ]
+    },
+    {
+      "id": "persistence_broken",
+      "intent": "An earlier run that persisted with this one, with a comparable run between them that did not. Persistence is across consecutive comparable runs, so the run in the middle ends the streak and nothing before it counts. A comparable run in the middle that did not report the variable at all breaks it too: a streak nobody measured is not a streak.",
+      "source": "ADR 0010; Ethicompass/lens#31",
+      "example": "before-before (0.20, 0.45), before (0.00, 0.05), now (0.20, 0.45), all comparable -> persistence_broken(r, v, before-before)",
+      "head": "persistence_broken(Run, Variable, Prev)",
+      "body": [
+        "persisted_with(Run, Variable, Prev)",
+        "run_at(Run, At)",
+        "run_at(Prev, PrevAt)",
+        "comparable(Run, Mid)",
+        "run_at(Mid, MidAt)",
+        "MidAt > PrevAt",
+        "MidAt < At",
+        "not persisted_with(Run, Variable, Mid)"
+      ]
+    },
+    {
+      "id": "persisted_through_self",
+      "intent": "This run is the first run of its own streak when its rate is reportable and clears zero. Stated as a row so persistence_window counts runs, not earlier runs.",
+      "source": "ADR 0010; Ethicompass/lens#31",
+      "example": "estimated(r, v, \"converged\") and rate(r, v, 0.32, 0.20, 0.45, 50) -> persisted_through(r, v, r)",
+      "head": "persisted_through(Run, Variable, Run)",
+      "body": [
+        "estimated(Run, Variable, Status)",
+        "reportable(Status)",
+        "rate(Run, Variable, Point, Lo, Hi, N)",
+        "Lo > 0.0"
+      ]
+    },
+    {
+      "id": "persisted_through_prior",
+      "intent": "An earlier run that persisted with this one, is earlier by run_at, and has no comparable run between them that broke the streak. Both runs must be placed in time: a run with no run_at cannot be shown to be consecutive with anything, so it does not count.",
+      "source": "ADR 0010; Ethicompass/lens#31",
+      "example": "persisted_with(r, v, before), run_at(before) < run_at(r), no persistence_broken(r, v, before) -> persisted_through(r, v, before)",
+      "head": "persisted_through(Run, Variable, Prev)",
+      "body": [
+        "persisted_with(Run, Variable, Prev)",
+        "run_at(Run, At)",
+        "run_at(Prev, PrevAt)",
+        "PrevAt < At",
+        "not persistence_broken(Run, Variable, Prev)"
+      ]
+    },
+    {
+      "id": "persistence_unsettled",
+      "intent": "A run in this one's persistence streak, this run included, whose own interval did not settle. Read by promote_persistence, which withholds the promotion when any such run exists.",
+      "source": "ADR 0010; Ethicompass/lens#31",
+      "example": "persisted_through(r, v, prev) and estimated(prev, v, \"undersampled\") -> persistence_unsettled(r, v)",
+      "head": "persistence_unsettled(Run, Variable)",
+      "body": [
+        "persisted_through(Run, Variable, Streak)",
+        "not estimated(Streak, Variable, \"converged\")"
+      ]
+    },
+    {
+      "id": "promote_persistence",
+      "intent": "Persistence is worth narrating precisely because nothing changed: a finding that was reported and remains true is the one a reader is most likely to have assumed was handled. It is promoted only when every run of the streak settled, this one included; one undersampled reading in the streak keeps the finding and withholds the promotion.",
+      "source": "ADR 0009, ADR 0010",
+      "example": "finding(r, \"persistence\", fairness, fairness.stereotype), every run converged -> promoted(...); one earlier run undersampled -> the finding stays, unpromoted",
+      "head": "promoted(Run, \"persistence\", Dimension, Variable)",
+      "body": [
+        "finding(Run, \"persistence\", Dimension, Variable)",
+        "not persistence_unsettled(Run, Variable)"
+      ]
+    },
+    {
+      "id": "finding_remediation_verified",
+      "intent": "An intervention is on record between the two runs and the rate fell below where it was: the upper bound now is under the lower bound before. This is the one finding that closes a loop with a previous insight, and it confirms the hypothesis by intervention rather than by prediction. Both sides must carry a reportable status: an interval below the detection floor cannot show that anything fell.",
+      "source": "ADR 0010, which is the only place this is defined",
+      "example": "before (0.30, 0.55), an intervention, then (0.00, 0.12), both comparable -> finding(r, \"remediation_verified\", ...)",
+      "head": "finding(Run, \"remediation_verified\", Dimension, Variable)",
+      "body": [
+        "comparable(Run, Prev)",
+        "estimated(Run, Variable, Status)",
+        "reportable(Status)",
+        "estimated(Prev, Variable, PrevStatus)",
+        "reportable(PrevStatus)",
+        "rate(Run, Variable, Point, Lo, Hi, N)",
+        "rate(Prev, Variable, PrevPoint, PrevLo, PrevHi, PrevN)",
+        "variable_in(Variable, Dimension)",
+        "run_at(Run, At)",
+        "run_at(Prev, PrevAt)",
+        "intervention(Variable, InterventionAt, Note)",
+        "InterventionAt > PrevAt",
+        "InterventionAt <= At",
+        "Hi < PrevLo"
+      ]
+    },
+    {
+      "id": "promote_remediation_verified",
+      "intent": "A remediation that held is worth narrating for the same reason a regression is: it is evidence about a change somebody made, and it is the only kind Lens can produce that is good news. It is promoted only when both readings settled, because good news read off an undersampled interval is the kind a reader is least inclined to question.",
+      "source": "ADR 0009, ADR 0010; Ethicompass/lens#31",
+      "example": "finding(r, \"remediation_verified\", safety, safety.hate) with both runs converged -> promoted(...); either undersampled -> the finding stays, unpromoted",
+      "head": "promoted(Run, \"remediation_verified\", Dimension, Variable)",
+      "body": [
+        "finding(Run, \"remediation_verified\", Dimension, Variable)",
+        "comparable(Run, Prev)",
+        "estimated(Run, Variable, \"converged\")",
+        "estimated(Prev, Variable, \"converged\")",
+        "rate(Run, Variable, Point, Lo, Hi, N)",
+        "rate(Prev, Variable, PrevPoint, PrevLo, PrevHi, PrevN)",
+        "run_at(Run, At)",
+        "run_at(Prev, PrevAt)",
+        "intervention(Variable, InterventionAt, Note)",
+        "InterventionAt > PrevAt",
+        "InterventionAt <= At",
+        "Hi < PrevLo"
+      ]
+    }
+  ]
+}

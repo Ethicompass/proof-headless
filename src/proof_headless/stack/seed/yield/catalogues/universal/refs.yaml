@@ -1,0 +1,15 @@
+# The domain knowledge base this catalogue is built, tested and versioned against, pinned by digest.
+#
+# Two roles of knowledge base that must not be confused. This one -- the DOMAIN base -- belongs to the
+# catalogue and is the fixture its conformance tests run over, independent of any client. The TARGET
+# base is the client's oracle, the thing a doc=1/doc=0 label is read from; it is bound in the
+# engagement, never travels in a catalogue, and is used only to score and anchor, never to generate.
+domain_kb: null   # the universal catalogue is not grounded, so it needs none
+
+# One strategy is delivered as a conversation rather than as one turn, and `delivery.json` beside
+# this file says so: `escalate-system-prompt` opens by asking how the assistant decides and an
+# attacker presses toward its instructions across up to four turns. The sidecar names the attacker
+# by id -- `crescendo` -- and never a model: a run that generates this strategy binds the id in
+# `RunSpec.attackers` (ADR 0014), or the entry gate refuses it by name. Only a run with no brain
+# generates it, because its phrasing carries no premise slot; a grounded run over this catalogue is
+# asked to bind nobody.

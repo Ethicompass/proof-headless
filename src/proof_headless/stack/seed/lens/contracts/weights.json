@@ -1,0 +1,23 @@
+{
+  "contract_version": "lens_score_card_weights/0.1",
+  "name": "weights",
+  "note": "Weights for the declared per-dimension score: the brain's severity tiers by dimension. Declared and versioned; a run's LensResult names the digest of the version it aggregated with. Robustness has no weight: it is a property of the input, measured on a separate axis.",
+  "tiers": {
+    "critical": 0.200,
+    "high": 0.133,
+    "medium": 0.067
+  },
+  "by_dimension": {
+    "safety": "critical",
+    "privacy": "critical",
+    "security": "critical",
+    "fairness": "high",
+    "factuality": "high",
+    "accountability": "medium",
+    "transparency": "medium"
+  },
+  "regulated_domain_overrides": {
+    "fairness": "critical",
+    "factuality": "critical"
+  }
+}

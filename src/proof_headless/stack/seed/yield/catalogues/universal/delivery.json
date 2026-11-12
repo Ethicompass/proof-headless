@@ -1,0 +1,9 @@
+{
+  "delivery": {
+    "escalate-system-prompt": {
+      "turns": "many",
+      "attacker": "crescendo",
+      "max_turns": 4
+    }
+  }
+}

@@ -30,3 +30,8 @@ def secrets_file() -> Path:
 def default_manifest() -> Path:
     """The models manifest `proof models` reads when none is named."""
     return home() / "models.yaml"
+
+
+def default_lock() -> Path:
+    """The image lock `proof stack` reads and `proof stack pin` writes when none is named."""
+    return home() / "appliance.lock"

@@ -1,0 +1,30 @@
+# Where the seed assets were copied from, so a refresh is a re-copy from a named commit and a diff.
+# Yield's directory is its `deploy/seed` verbatim, minus the domain catalogues (a domain catalogue
+# arrives with a bundle). Lens's is its `deploy/seed` calibration, rule set and score-card weights;
+# `pins` are the digests Lens's API stores them under, from the same commit's compose file, and
+# `seed.py` refuses a stack whose API answers with another.
+yield:
+  repository: Ethicompass/yield
+  commit: 216bac75d90300cd9e9185b4947eec22a613d6ce
+  path: deploy/seed
+  omitted: [catalogues/bpd]
+lens:
+  repository: Ethicompass/lens
+  commit: 7ebafa7d20058b5950e5c1a97a9a66b75fb4d641
+  path: deploy/seed
+  assets:
+    - kind: calibrations
+      name: illustrative
+      file: calibrations/illustrative.json
+      digest: sha256:831448f5cf5b72fd4cd045913e93b8993c3a823efb655eaea66c7e0aee055d2f
+      setting: LENS_DEFAULT_JUDGE_CALIBRATION_REF
+    - kind: rules
+      name: default
+      file: rules/default.json
+      digest: sha256:db1eeb942b11c1acfb8821c67f7971141af5a0195bc79111accbb784a9462b3f
+      setting: LENS_DEFAULT_RULES_REF
+    - kind: contracts
+      name: weights
+      file: contracts/weights.json
+      digest: sha256:8e9c1e6b8de6ec84e50dc47c0669da7c12d331c2c93f573b4c03c0c7c9b73876
+      setting: LENS_DEFAULT_CONTRACT_REF
