@@ -166,17 +166,21 @@ def wait_healthy(
     compose: Compose,
     model: ModelEntry,
     *,
+    baseline: int = 0,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> None:
-    """Block until `model` reports healthy; fail fast if its container stops or turns unhealthy."""
+    """Block until `model` reports healthy; fail fast if its container stops, turns unhealthy,
+    or restarts. `baseline` is the restart count read just before this start: the count covers the
+    container's whole life, and a container `up` left running from an earlier failed attempt
+    carries restarts that are not this start's."""
     deadline = clock() + model.start_period_seconds + GRACE_SECONDS
     with err.status(f"Waiting for [name]{model.name}[/name] to load {model.hf_id}"):
         while True:
             state = compose.ps().get(model.name)
             if state is not None and state.health == "healthy":
                 return
-            restarted = compose.restarts(model.name) if state is not None else 0
+            restarted = compose.restarts(model.name) - baseline if state is not None else 0
             if state is not None and (
                 state.state in STOPPED or state.health == "unhealthy" or restarted
             ):
@@ -218,8 +222,9 @@ def up(
             if current is not None and current.health == "healthy":
                 err.print(f"[muted]{model.name} is already healthy.[/muted]")
                 continue
+            baseline = compose.restarts(model.name)
             compose.up(model.name)
-            wait_healthy(compose, model)
+            wait_healthy(compose, model, baseline=baseline)
             err.print(f"[ok]{model.name} is healthy[/ok] on 127.0.0.1:{model.port}.")
     except ComposeFailed as error:
         err.print(f"[fail]docker compose failed.[/fail] {error}")
