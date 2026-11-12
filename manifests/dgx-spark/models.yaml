@@ -1,0 +1,86 @@
+# The four models of a self-hosted engagement on one NVIDIA DGX Spark (GB10, aarch64, 128 GB of
+# unified memory). Copy to $PROOF_HOME/models.yaml, or pass it with --manifest.
+#
+# Memory: every share is a fraction of the 128 GB the GPU and the operating system share. The
+# shares add up to 0.76, leaving about 30 GB for the OS, Yield, Lens, MinIO and Valkey. They are a
+# starting point to be tuned on the box. The chat model's recipe uses 0.7 on its own, plus a
+# 220 GiB CPU offload that unified memory cannot back, so neither is used here.
+#
+# Images: vllm/vllm-openai:v0.32.0 is published for arm64, and it is the version the Nemotron 3.5
+# Embed and Rerank cards pin. Lightning needs >= 0.27.1. Pin by digest once verified on the box.
+version: 1
+memory_budget: 0.80
+network: proof-models
+hf_cache: ~/.cache/huggingface
+models:
+  - name: chat
+    hf_id: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+    served_name: nemotron-3.5-lightning
+    image: vllm/vllm-openai:v0.32.0
+    port: 8001
+    gpu_memory_utilization: 0.40
+    roles: [chat]
+    api: chat
+    args:
+      - --mamba-backend=flashinfer
+      - --mamba-cache-mode=align
+      - --enable-prefix-caching
+      - --max-num-batched-tokens=16384
+      - --kv-cache-dtype=fp8
+      - --moe-backend=marlin
+      - --load-format=fastsafetensors
+      - --tensor-parallel-size=1
+      - --mamba-ssm-cache-dtype=float16
+      - --enable-mamba-cache-stochastic-rounding
+      - --mamba-cache-philox-rounds=5
+      - --reasoning-parser=nemotron_v3
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_coder
+      - --max-logprobs=20
+
+  - name: guardian
+    hf_id: meta-llama/Llama-Guard-4-12B
+    served_name: llama-guard-4-12b
+    image: vllm/vllm-openai:v0.32.0
+    port: 8002
+    gpu_memory_utilization: 0.15
+    roles: [guardian]
+    api: chat
+    gated: true
+    args:
+      - --max-model-len=8192
+      # Online FP8 halves the 24 GB of BF16 weights. Llama Guard is a measuring instrument, so
+      # adopt FP8 only after its labels agree with BF16 on a sample of real bias traces.
+      - --quantization=fp8
+
+  - name: rerank
+    hf_id: nvidia/Nemotron-3.5-Rerank-8B-BF16
+    served_name: nemotron-3.5-rerank-8b
+    image: vllm/vllm-openai:v0.32.0
+    port: 8003
+    gpu_memory_utilization: 0.16
+    roles: [rerank]
+    api: rerank
+    args:
+      - --runner=pooling
+      - --dtype=bfloat16
+      - --max-model-len=8192
+      - --max-num-seqs=4
+      - --pooler-config={"seq_pooling_type":"MEAN","use_activation":false}
+      - --chat-template-content-format=openai
+      # The model card serves with the chat template exported from the checkpoint
+      # (--chat-template=reranker_chat_template.jinja). Mount it with `mounts:` once exported,
+      # and compare /v1/rerank with /classify on the box (Ethicompass/yield#146).
+
+  - name: embed
+    hf_id: nvidia/Nemotron-3.5-Embed-1B-BF16
+    served_name: nemotron-3.5-embed-1b
+    image: vllm/vllm-openai:v0.32.0
+    port: 8004
+    gpu_memory_utilization: 0.05
+    roles: [embed]
+    api: embeddings
+    args:
+      - --dtype=bfloat16
+      - --max-model-len=8192
+      - --chat-template-content-format=openai

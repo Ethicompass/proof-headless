@@ -16,6 +16,7 @@ from rich.table import Table
 
 from proof_headless import __version__
 from proof_headless.console import out
+from proof_headless.models.commands import app as models_app
 
 app = typer.Typer(
     name="proof",
@@ -33,6 +34,9 @@ def interactive() -> bool:
     the shell on, and Textual would either fail or wait for keys nobody can press.
     """
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+app.add_typer(models_app, name="models")
 
 
 @app.callback(invoke_without_command=True)
