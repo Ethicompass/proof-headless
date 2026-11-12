@@ -1,0 +1,38 @@
+# Which served model plays each part of a run, by its name in the models manifest, and how many
+# requests per second each model may take. The rate is per model, so every spec that shares a
+# model asks Yield's shared rate bucket for the same rate.
+
+[pacing]
+chat = 2.0
+guardian = 1.0
+embed = 4.0
+rerank = 4.0
+
+# The principle judge: reasoning on, with a budget for it.
+[roles.judge]
+model = "chat"
+reasoning_budget = 4096
+
+# The metrics' judge: the same model with its reasoning off, for structured output.
+[roles.metric_judge]
+model = "chat"
+
+[roles.generator]
+model = "chat"
+
+[roles.embedder]
+model = "embed"
+
+[roles.reranker]
+model = "rerank"
+
+[roles.guardian]
+model = "guardian"
+
+# Any other role plays an attacker, named by the matrix's `attackers` tables.
+[roles.attacker]
+model = "chat"
+
+[roles.attacker-strict]
+model = "chat"
+reasoning = false
