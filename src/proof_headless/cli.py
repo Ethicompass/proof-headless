@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import platform
+import sys
 
 import typer
 from rich.table import Table
@@ -25,13 +26,26 @@ app = typer.Typer(
 )
 
 
+def interactive() -> bool:
+    """Whether a person is at a terminal on both ends.
+
+    A non-interactive SSH command (`ssh host proof`), a pipe or a CI job has no terminal to draw
+    the shell on, and Textual would either fail or wait for keys nobody can press.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 @app.callback(invoke_without_command=True)
 def root(ctx: typer.Context) -> None:
-    """Open the interactive shell when no command is given."""
-    if ctx.invoked_subcommand is None:
-        from proof_headless.tui.app import ProofApp
+    """Open the interactive shell when no command is given, or print the help without a terminal."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not interactive():
+        out.print(ctx.get_help())
+        return
+    from proof_headless.tui.app import ProofApp
 
-        ProofApp().run()
+    ProofApp().run()
 
 
 @app.command()

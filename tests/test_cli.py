@@ -30,3 +30,10 @@ def test_version_as_a_table() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert __version__ in result.output
+
+
+def test_without_a_terminal_no_command_prints_the_help_instead_of_the_shell() -> None:
+    """CliRunner gives the command no terminal, the way `ssh host proof` or a pipe would."""
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    assert "version" in result.output
