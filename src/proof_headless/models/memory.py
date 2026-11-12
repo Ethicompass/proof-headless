@@ -4,6 +4,10 @@ vLLM sizes its KV cache from `gpu_memory_utilization` times the device's memory 
 start, minutes in, when it cannot have it. On a unified-memory host the device's memory is the
 host's, so the check reads `/proc/meminfo`: the models not yet running must fit in what is
 available now. Models already running hold their share already, so they are not counted twice.
+
+The check is necessary, not sufficient. `MemAvailable` counts page cache the kernel can reclaim,
+and on a GB10 the CUDA allocator does not always get it back, so a start that passes here can
+still be refused by vLLM's own check; that refusal shows up in the model's log, which `up` prints.
 """
 
 from __future__ import annotations
@@ -67,8 +71,15 @@ class Preflight:
         return self.needed <= self.available
 
 
-def preflight(manifest: Manifest, host: HostMemory, running: frozenset[str]) -> Preflight:
-    """What starting every model of `manifest` not in `running` would claim against `host`."""
+def preflight(
+    manifest: Manifest,
+    host: HostMemory,
+    running: frozenset[str],
+    starting: frozenset[str] | None = None,
+) -> Preflight:
+    """What starting the models in `starting` (default: all) that are not in `running` would
+    claim against `host`. Models neither starting nor running claim nothing and are left out."""
+    chosen = starting if starting is not None else frozenset(m.name for m in manifest.models)
     claims = tuple(
         Claim(
             name=model.name,
@@ -77,5 +88,6 @@ def preflight(manifest: Manifest, host: HostMemory, running: frozenset[str]) -> 
             running=model.name in running,
         )
         for model in manifest.models
+        if model.name in chosen or model.name in running
     )
     return Preflight(claims=claims, available=host.available)

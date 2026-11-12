@@ -33,3 +33,13 @@ def test_models_already_running_are_not_counted_twice() -> None:
     warm = preflight(manifest, host, frozenset({"chat"}))
     assert warm.needed == pytest.approx(36.0)
     assert warm.fits
+
+
+def test_only_the_models_being_started_are_counted() -> None:
+    manifest = load(SPARK_MANIFEST)
+    check = preflight(
+        manifest, HostMemory(total=100.0, available=10.0), frozenset(), frozenset({"embed"})
+    )
+    assert [claim.name for claim in check.claims] == ["embed"]
+    assert check.needed == pytest.approx(5.0)
+    assert check.fits
