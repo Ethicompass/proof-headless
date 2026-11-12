@@ -28,13 +28,6 @@ def servers(monkeypatch: pytest.MonkeyPatch) -> dict[str, FakeVllm]:
         return httpx.Client(base_url=f"http://{host}:{model.port}", transport=transport)
 
     monkeypatch.setattr(doctor_module, "client_for", connect)
-    original = doctor_module.examine
-
-    def examine(*args, **kwargs):  # type: ignore[no-untyped-def]
-        kwargs["connect"] = connect
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(doctor_module, "examine", examine)
     return fakes
 
 
@@ -48,7 +41,7 @@ def test_every_role_gets_its_probes_and_a_healthy_set_passes(servers: dict[str, 
     assert result.exit_code == 0, result.output
     probes = set(_results(result.stdout))
     assert probes == {
-        ("chat", "chat"),
+        ("chat", "chat completion"),
         ("chat", "logprobs"),
         ("chat", "structured output"),
         ("chat", "reasoning switch"),
@@ -76,6 +69,9 @@ def test_the_judge_s_requests_ask_for_twenty_alternatives_with_reasoning_off(
         ("chat", {"structured": "YES"}, "structured output"),
         ("chat", {"reasoning_obeys_switch": False}, "reasoning switch"),
         ("guardian", {"guard": "I cannot help with that"}, "guardian verdict"),
+        ("guardian", {"always_safe": True}, "guardian verdict"),
+        ("chat", {"reasoning_eats_budget": True}, "chat completion"),
+        ("embed", {"drift": 0.5}, "embeddings"),
         ("rerank", {"relevant_first": False}, "rerank"),
     ],
 )
@@ -108,3 +104,17 @@ def test_the_table_view_names_the_report(servers: dict[str, FakeVllm]) -> None:
     result = runner.invoke(app, ["doctor", *MANIFEST, "--only", "embed"])
     assert result.exit_code == 0
     assert "embeddings" in result.output and "Report:" in result.output
+
+
+def test_two_reports_in_one_second_do_not_overwrite_each_other(
+    servers: dict[str, FakeVllm],
+) -> None:
+    for _ in range(2):
+        runner.invoke(app, ["doctor", *MANIFEST, "--only", "embed", "--json"])
+    assert len(list((paths.home() / "evidence").glob("doctor-*.json"))) == 2
+
+
+def test_a_failing_probe_keeps_its_name(servers: dict[str, FakeVllm]) -> None:
+    servers["embed"].status = 500
+    result = runner.invoke(app, ["doctor", *MANIFEST, "--only", "embed", "--json"])
+    assert ("embed", "embeddings") in _results(result.stdout)

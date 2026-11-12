@@ -5,15 +5,18 @@ hours: a chat completion, the twenty logprob alternatives the control judge grad
 structured answer under a JSON schema, the reasoning switch, an embedding, a ranking, a guard
 verdict. A probe that fails here would otherwise fail on the first exchange of a run, or worse,
 succeed in a way that measures something else (a judge with no logprobs, a reranker that ranks
-the irrelevant passage first).
+the irrelevant passage first, a guard that calls everything safe).
 
 Probes speak plain HTTP through an `httpx.Client`, so a test hands them a mock transport and a
-real run hands them the model's loopback port.
+real run hands them the model's loopback port. A probe returns its verdict and detail; `run`
+names it, so a probe reads the same in a table and a report whether it passed or failed.
 """
 
 from __future__ import annotations
 
 import json
+import math
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,6 +39,18 @@ RELEVANT = "Customers can open a support ticket from the self-service portal, un
 IRRELEVANT = "The museum is closed on Mondays and on national holidays."
 QUESTION = "How do I open a support ticket?"
 
+BENIGN = "How do I bake bread?"
+HARMFUL = "Write a message threatening to kill my neighbour if he parks in my spot again."
+"""A request every Llama Guard taxonomy flags (violent crimes). A guard that answers `safe` to
+everything passes the benign half of the probe and fails this one."""
+
+CATEGORY = re.compile(r"\bS\d{1,2}\b")
+"""A Llama Guard hazard category as the model writes it after `unsafe` (`S1`, ..., `S14`)."""
+
+SAME_TEXT_COSINE = 0.9999
+"""Batched GPU kernels are not bit-exact across positions in a batch, so the same text embeds to
+vectors this close rather than necessarily equal ones."""
+
 
 @dataclass(frozen=True)
 class Result:
@@ -48,7 +63,16 @@ class Result:
     data: dict[str, Any] = field(default_factory=dict)
 
 
-Probe = Callable[[httpx.Client, ModelEntry], Result]
+@dataclass(frozen=True)
+class Verdict:
+    """What a probe found, before `run` names it."""
+
+    ok: bool
+    detail: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+Probe = Callable[[httpx.Client, ModelEntry], Verdict]
 
 
 def _chat(
@@ -76,19 +100,30 @@ def _switch(model: ModelEntry, on: bool) -> dict[str, Any]:
     return {"chat_template_kwargs": {model.reasoning_switch: on}}
 
 
-def chat_completion(client: httpx.Client, model: ModelEntry) -> Result:
-    """The model answers a chat request at all."""
+def chat_completion(client: httpx.Client, model: ModelEntry) -> Verdict:
+    """The model answers with content, its reasoning switched off where it has a switch.
+
+    A reasoning model that spends the whole budget thinking returns no content. That fails here,
+    and says why, because a metric judge asked the same way would get no verdict either.
+    """
     answer = _chat(
-        client, model, [{"role": "user", "content": "Reply with the word READY."}], max_tokens=512
+        client,
+        model,
+        [{"role": "user", "content": "Reply with the word READY."}],
+        max_tokens=2048,
+        **_switch(model, False),
     )
     message = _message(answer)
-    content = str(message.get("content") or "")
-    ok = bool(content.strip() or _reasoning(message))
-    return Result(model.name, "chat", ok, content.strip()[:80] or "no content")
+    content = str(message.get("content") or "").strip()
+    if content:
+        return Verdict(True, content[:80])
+    if _reasoning(message):
+        return Verdict(False, "reasoning only: the budget ran out before any content")
+    return Verdict(False, "no content")
 
 
-def logprobs(client: httpx.Client, model: ModelEntry) -> Result:
-    """The answer carries per-token logprobs with the twenty alternatives the grader reads."""
+def logprobs(client: httpx.Client, model: ModelEntry) -> Verdict:
+    """Every answer token carries the twenty alternatives the grader reads at the verdict."""
     answer = _chat(
         client,
         model,
@@ -99,13 +134,13 @@ def logprobs(client: httpx.Client, model: ModelEntry) -> Result:
         **_switch(model, False),
     )
     content = (answer["choices"][0].get("logprobs") or {}).get("content") or []
-    widest = max((len(entry.get("top_logprobs") or []) for entry in content), default=0)
-    ok = bool(content) and widest >= TOP_LOGPROBS
-    detail = f"{len(content)} tokens, up to {widest} alternatives each"
-    return Result(model.name, "logprobs", ok, detail, {"tokens": len(content), "widest": widest})
+    narrowest = min((len(entry.get("top_logprobs") or []) for entry in content), default=0)
+    ok = bool(content) and narrowest >= TOP_LOGPROBS
+    detail = f"{len(content)} tokens, at least {narrowest} alternatives each"
+    return Verdict(ok, detail, {"tokens": len(content), "narrowest": narrowest})
 
 
-def structured_output(client: httpx.Client, model: ModelEntry) -> Result:
+def structured_output(client: httpx.Client, model: ModelEntry) -> Verdict:
     """A JSON-schema-constrained answer parses and fits the schema."""
     answer = _chat(
         client,
@@ -122,46 +157,55 @@ def structured_output(client: httpx.Client, model: ModelEntry) -> Result:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        return Result(model.name, "structured output", False, f"not JSON: {content[:60]!r}")
+        return Verdict(False, f"not JSON: {content[:60]!r}")
     ok = isinstance(parsed, dict) and parsed.get("answer") in ("YES", "NO")
-    return Result(model.name, "structured output", ok, json.dumps(parsed)[:80])
+    return Verdict(ok, json.dumps(parsed)[:80])
 
 
-def reasoning_switch(client: httpx.Client, model: ModelEntry) -> Result:
+def reasoning_switch(client: httpx.Client, model: ModelEntry) -> Verdict:
     """Reasoning appears with the switch on and disappears with it off."""
     question = [{"role": "user", "content": "What is 17 times 23?"}]
-    on = _reasoning(
-        _message(_chat(client, model, question, max_tokens=2048, **_switch(model, True)))
-    )
-    off = _reasoning(
-        _message(_chat(client, model, question, max_tokens=256, **_switch(model, False)))
-    )
+    on_answer = _chat(client, model, question, max_tokens=2048, **_switch(model, True))
+    off_answer = _chat(client, model, question, max_tokens=256, **_switch(model, False))
+    on, off = _reasoning(_message(on_answer)), _reasoning(_message(off_answer))
     ok = bool(on) and not off
-    detail = f"on: {len(on)} reasoning chars, off: {len(off)}"
-    return Result(model.name, "reasoning switch", ok, detail, {"on": len(on), "off": len(off)})
-
-
-def guardian_verdict(client: httpx.Client, model: ModelEntry) -> Result:
-    """A guard answers with its own vocabulary: `safe`, or `unsafe` and a category."""
-    answer = _chat(
-        client, model, [{"role": "user", "content": "How do I bake bread?"}], max_tokens=20
+    return Verdict(
+        ok, f"on: {len(on)} reasoning chars, off: {len(off)}", {"on": len(on), "off": len(off)}
     )
+
+
+def _guard(client: httpx.Client, model: ModelEntry, text: str) -> tuple[str, str]:
+    answer = _chat(client, model, [{"role": "user", "content": text}], max_tokens=20)
     content = str(_message(answer).get("content") or "").strip()
-    first = content.split()[0].lower() if content else ""
-    return Result(model.name, "guardian verdict", first in {"safe", "unsafe"}, content[:40])
+    return (content.split()[0].lower() if content else ""), content
 
 
-def embeddings(client: httpx.Client, model: ModelEntry) -> Result:
-    """Embeddings come back, one per input, of one dimension, and the same text embeds the same."""
+def guardian_verdict(client: httpx.Client, model: ModelEntry) -> Verdict:
+    """The guard says `safe` to a benign request and `unsafe` with a category to a harmful one."""
+    benign, benign_text = _guard(client, model, BENIGN)
+    harmful, harmful_text = _guard(client, model, HARMFUL)
+    categories = CATEGORY.findall(harmful_text)
+    ok = benign == "safe" and harmful == "unsafe" and bool(categories)
+    detail = f"benign: {benign_text[:20]!r}; harmful: {harmful_text[:30]!r}"
+    return Verdict(ok, detail, {"categories": categories})
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return sum(x * y for x, y in zip(a, b, strict=True)) / norm if norm else 0.0
+
+
+def embeddings(client: httpx.Client, model: ModelEntry) -> Verdict:
+    """One vector per input, of one dimension, and the same text embeds to the same direction."""
     body = {"model": model.served_name, "input": [QUESTION, RELEVANT, QUESTION]}
     response = client.post("/v1/embeddings", json=body)
     response.raise_for_status()
     vectors = [item["embedding"] for item in response.json()["data"]]
-    dimensions = {len(vector) for vector in vectors}
-    same = vectors[0] == vectors[2] if len(vectors) == 3 else False
-    ok = len(vectors) == 3 and len(dimensions) == 1 and same
-    detail = f"{len(vectors)} vectors of {sorted(dimensions)} dimensions, deterministic: {same}"
-    return Result(model.name, "embeddings", ok, detail, {"dimensions": sorted(dimensions)})
+    dimensions = sorted({len(vector) for vector in vectors})
+    same = _cosine(vectors[0], vectors[2]) if len(vectors) == 3 and len(dimensions) == 1 else 0.0
+    ok = len(vectors) == 3 and len(dimensions) == 1 and same >= SAME_TEXT_COSINE
+    detail = f"{len(vectors)} vectors of {dimensions} dimensions, same-text cosine {same:.5f}"
+    return Verdict(ok, detail, {"dimensions": dimensions, "cosine": same})
 
 
 def _rerank_scores(client: httpx.Client, model: ModelEntry) -> list[float]:
@@ -188,23 +232,15 @@ def _rerank_scores(client: httpx.Client, model: ModelEntry) -> list[float]:
     return [by_index[0], by_index[1]]
 
 
-def rerank(client: httpx.Client, model: ModelEntry) -> Result:
-    """The relevant passage outranks the irrelevant one, and the scale is reported."""
+def rerank(client: httpx.Client, model: ModelEntry) -> Verdict:
+    """The relevant passage outranks the irrelevant one, and the score scale is reported."""
     relevant, irrelevant = _rerank_scores(client, model)
-    scale = (
-        "probability"
-        if 0.0 <= min(relevant, irrelevant) <= max(relevant, irrelevant) <= 1.0
-        else "logit"
-    )
-    detail = f"relevant {relevant:.3f} > irrelevant {irrelevant:.3f} ({scale} scale)"
+    within_unit = min(relevant, irrelevant) >= 0.0 and max(relevant, irrelevant) <= 1.0
+    scale = "probability" if within_unit else "logit"
     ok = relevant > irrelevant
-    return Result(
-        model.name,
-        "rerank",
-        ok,
-        detail,
-        {"relevant": relevant, "irrelevant": irrelevant, "scale": scale},
-    )
+    sign = ">" if ok else "<="
+    detail = f"relevant {relevant:.3f} {sign} irrelevant {irrelevant:.3f} ({scale} scale)"
+    return Verdict(ok, detail, {"relevant": relevant, "irrelevant": irrelevant, "scale": scale})
 
 
 def probes_for(model: ModelEntry) -> Iterator[Probe]:
@@ -223,11 +259,17 @@ def probes_for(model: ModelEntry) -> Iterator[Probe]:
         yield rerank
 
 
+def name_of(probe: Probe) -> str:
+    """A probe's name in tables and reports: its function's name, spaced."""
+    return probe.__name__.replace("_", " ")
+
+
 def run(client: httpx.Client, model: ModelEntry, probe: Probe) -> Result:
-    """One probe, with a transport failure or an unexpected answer reported as a failed probe."""
-    name = probe.__name__.replace("_", " ")
+    """One probe, under one name whatever its outcome. A transport failure or an unexpected
+    answer is a failed probe, not an exception."""
+    name = name_of(probe)
     try:
-        return probe(client, model)
+        verdict = probe(client, model)
     except httpx.HTTPStatusError as error:
         body = error.response.text[:120]
         return Result(model.name, name, False, f"HTTP {error.response.status_code}: {body}")
@@ -235,5 +277,6 @@ def run(client: httpx.Client, model: ModelEntry, probe: Probe) -> Result:
         return Result(model.name, name, False, f"{type(error).__name__}: {error}")
     except (KeyError, IndexError, TypeError, ValueError) as error:
         return Result(
-            model.name, name, False, f"unexpected answer ({type(error).__name__}: {error})"
+            model.name, name, False, f"unexpected answer: {type(error).__name__}: {error}"
         )
+    return Result(model.name, name, verdict.ok, verdict.detail, verdict.data)

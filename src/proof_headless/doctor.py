@@ -39,15 +39,15 @@ def examine(
     *,
     host: str,
     timeout: float,
-    connect: ClientFor = client_for,
+    connect: ClientFor | None = None,
 ) -> list[probes.Result]:
     """Every probe for every chosen model, in manifest order."""
     chosen = [manifest.named(name) for name in names] if names else list(manifest.models)
     results: list[probes.Result] = []
     for model in chosen:
-        with connect(model, host, timeout) as client:
+        with (connect or client_for)(model, host, timeout) as client:
             for probe in probes.probes_for(model):
-                with err.status(f"[name]{model.name}[/name]: {probe.__name__.replace('_', ' ')}"):
+                with err.status(f"[name]{model.name}[/name]: {probes.name_of(probe)}"):
                     results.append(probes.run(client, model, probe))
     return results
 
@@ -75,7 +75,7 @@ def write_report(document: dict[str, object]) -> Path:
     """Save the report under `$PROOF_HOME/evidence/` and return its path."""
     directory = paths.home() / "evidence"
     directory.mkdir(parents=True, exist_ok=True)
-    stamp = str(document["at"]).replace(":", "").replace("+0000", "Z")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     path = directory / f"doctor-{stamp}.json"
     path.write_text(json.dumps(document, indent=2) + "\n")
     return path
