@@ -179,7 +179,7 @@ def pin_command(
         "develop",
         "--channel",
         "-c",
-        help="`develop` (amd64 and arm64) or `release` (amd64 only until the next promotion).",
+        help="`develop` (the integration branches) or `release` (the released versions).",
     ),
     overrides: list[str] = typer.Option(
         [], "--set", help="Resolve NAME from REF instead of the channel's (NAME=REF, repeatable)."

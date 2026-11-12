@@ -58,8 +58,9 @@ def imagetools(runner: Runner = run) -> Resolver:
     """A resolver backed by `docker buildx imagetools inspect`.
 
     An index lists its platforms. A single-platform image does not, so its config is read for
-    the one it has: the released images are amd64 only, and the lock has to say so for `up` to
-    refuse them on an arm64 host instead of letting them die with `exec format error`.
+    the one it has: an image published for one platform only (every release before yield api 0.1.13
+    and lens api 0.1.10 was amd64 only) has to say so in the lock, for `up` to refuse it on a host
+    of another architecture instead of letting it die with `exec format error`.
     """
 
     def inspect(reference: str, template: str) -> Any:
