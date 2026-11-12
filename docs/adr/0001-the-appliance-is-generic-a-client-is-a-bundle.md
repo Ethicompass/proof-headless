@@ -4,7 +4,7 @@ Status: accepted (2026-11-12)
 
 ## Context
 
-Two engagements (ARSAT and TRL, November 2026) were run with scripts written for each one. They
+The first two engagements (November 2026) were run with scripts written for each one. They
 built specs with model ids and an OpenRouter URL written in, queued runs one at a time, polled
 logs, launched Lens by hand, and kept keys in plain env files beside the client's material. None of
 it carried over to the next engagement. The next one runs every model on a single DGX Spark with
