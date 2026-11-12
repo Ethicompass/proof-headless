@@ -12,6 +12,8 @@ dependencies = [
     "typer>=0.15",
     "rich>=13.9",
     "textual>=8.0",
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -28,6 +30,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "pre-commit>=4.0",
+    "types-PyYAML",
 ]
 
 # ---------------------------------------------------------------------------
@@ -62,6 +65,7 @@ files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
