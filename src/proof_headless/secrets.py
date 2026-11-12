@@ -30,10 +30,13 @@ def check_private(path: Path) -> None:
 
 
 def _value(raw: str) -> str:
-    """A dotenv value as compose reads it: quoted verbatim, or unquoted up to a ` #` comment."""
+    """A dotenv value as compose reads it, as far as deciding whether it is empty: a quoted value
+    up to its closing quote, whatever comment follows; an unquoted one up to a ` #` comment.
+    `$NAME` references are not expanded, so one counts as a value."""
     raw = raw.strip()
-    if raw[:1] in {"'", '"'} and raw.endswith(raw[0]) and len(raw) >= 2:
-        return raw[1:-1]
+    if raw[:1] in {"'", '"'}:
+        closing = raw.find(raw[0], 1)
+        return raw[1:closing] if closing > 0 else raw[1:]
     if raw.startswith("#"):
         return ""
     return raw.split(" #", 1)[0].strip()

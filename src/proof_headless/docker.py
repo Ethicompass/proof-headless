@@ -41,6 +41,20 @@ class ServiceState:
 
 
 @dataclass(frozen=True)
+class Restarts:
+    """A container's restart count, which means nothing apart from the container it counts."""
+
+    container: str | None
+    count: int
+
+    def since(self, baseline: Restarts) -> int:
+        """Restarts after `baseline`: all of them when the container was recreated since."""
+        if self.container != baseline.container:
+            return self.count
+        return max(0, self.count - baseline.count)
+
+
+@dataclass(frozen=True)
 class Compose:
     """One compose project on this host."""
 
@@ -88,20 +102,21 @@ class Compose:
                 )
         return states
 
-    def restarts(self, service: str) -> int:
-        """How many times the service's container was restarted by its restart policy.
+    def restarts(self, service: str) -> Restarts:
+        """The service's container and how many times its restart policy restarted it.
 
         The one reliable sign of a crash loop: docker resets its restart backoff after any run of
         ten seconds, so a model that dies minutes into loading is back to `running` almost
-        immediately and is seldom caught in `restarting`. No container is no restarts.
+        immediately and is seldom caught in `restarting`. The count belongs to one container, so
+        it comes with that container's id. No container is no restarts.
         """
         ids = self._call("ps", "--all", "--quiet", service).split()
         if not ids:
-            return 0
+            return Restarts(container=None, count=0)
         result = self.runner(["docker", "inspect", "--format", "{{.RestartCount}}", ids[0]])
         if result.returncode != 0:
             raise ComposeFailed(["docker", "inspect", ids[0]], result)
-        return int(result.stdout.strip() or 0)
+        return Restarts(container=ids[0], count=int(result.stdout.strip() or 0))
 
     def logs(self, service: str, *, tail: int = 200) -> str:
         """The last `tail` lines of one service's logs."""

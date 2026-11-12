@@ -20,7 +20,7 @@ from rich.table import Table
 
 from proof_headless import paths, secrets
 from proof_headless.console import err, out
-from proof_headless.docker import Compose, ComposeFailed, ServiceState
+from proof_headless.docker import Compose, ComposeFailed, Restarts, ServiceState
 from proof_headless.models import manifest as manifests
 from proof_headless.models import memory, render
 from proof_headless.models.manifest import Manifest, ManifestInvalid, ModelEntry
@@ -166,21 +166,22 @@ def wait_healthy(
     compose: Compose,
     model: ModelEntry,
     *,
-    baseline: int = 0,
+    baseline: Restarts | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> None:
     """Block until `model` reports healthy; fail fast if its container stops, turns unhealthy,
-    or restarts. `baseline` is the restart count read just before this start: the count covers the
-    container's whole life, and a container `up` left running from an earlier failed attempt
-    carries restarts that are not this start's."""
+    or restarts. `baseline` is the container and count read just before this start: a count covers
+    a container's whole life, so one `up` left running from an earlier failed attempt carries
+    restarts that are not this start's, and one `up` recreated starts again from zero."""
     deadline = clock() + model.start_period_seconds + GRACE_SECONDS
     with err.status(f"Waiting for [name]{model.name}[/name] to load {model.hf_id}"):
         while True:
             state = compose.ps().get(model.name)
             if state is not None and state.health == "healthy":
                 return
-            restarted = compose.restarts(model.name) - baseline if state is not None else 0
+            before = baseline or Restarts(container=None, count=0)
+            restarted = compose.restarts(model.name).since(before) if state is not None else 0
             if state is not None and (
                 state.state in STOPPED or state.health == "unhealthy" or restarted
             ):
