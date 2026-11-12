@@ -119,6 +119,21 @@ def test_a_path_outside_the_bundle_is_named(bundle_dir: Path, tmp_path: Path) ->
     assert "outside the bundle" in _problems(bundle_dir)["prior acme-phrasings"]
 
 
+def test_a_symlink_inside_a_catalogue_that_leaves_the_bundle_is_named(
+    bundle_dir: Path, tmp_path: Path
+) -> None:
+    secret = tmp_path / "elsewhere.json"
+    secret.write_text("{}")
+    (bundle_dir / "catalogues/acme-support/pairs.json").symlink_to(secret)
+    assert "resolves outside the bundle" in _problems(bundle_dir)["catalogue acme-support"]
+
+
+def test_a_declaration_without_sections_is_not_a_declaration(bundle_dir: Path) -> None:
+    declaration = next((bundle_dir / "declarations").iterdir())
+    declaration.write_text(json.dumps({"contract_version": "lens_declaration/0.1"}))
+    assert "not a Lens declaration" in _problems(bundle_dir)[f"declaration {declaration.name}"]
+
+
 def test_a_broken_manifest_exits_2(tmp_path: Path) -> None:
     (tmp_path / "bundle.toml").write_text('client = "Not A Name"\nlanguage = "en"\n')
     with pytest.raises(BundleInvalid):
@@ -208,6 +223,39 @@ def test_a_failed_brain_push_names_the_brain(bundle_dir: Path, tmp_path: Path) -
 
     receipt = _load(bundle_dir, FakeCompute(), tmp_path, runner=failing)
     assert "brain acme: vitruvio exited 8: histories diverged" in (receipt.error or "")
+
+
+def test_skipping_brains_without_an_earlier_digest_stops_the_load(
+    bundle_dir: Path, tmp_path: Path
+) -> None:
+    receipt = _load(bundle_dir, FakeCompute(), tmp_path, skip_brains=True, previous=None)
+    assert not receipt.complete
+    assert "needs a digest from an earlier load" in (receipt.error or "")
+
+
+def test_a_stopped_load_keeps_the_last_receipt_s_live_digests(
+    bundle_dir: Path, tmp_path: Path
+) -> None:
+    first = _load(bundle_dir, FakeCompute(), tmp_path)
+    stopped = _load(bundle_dir, FakeCompute(refuse="/priors"), tmp_path, previous=first)
+    assert not stopped.complete
+    carried = {(i.kind, i.name): i for i in stopped.loaded if i.carried}
+    assert carried[("brain", "acme")].digest == DIGEST
+    assert ("prior", "acme-phrasings") in carried
+    assert ("catalogue", "acme-support") not in carried
+
+
+def test_without_an_explicit_choice_the_brain_s_config_decides_plain_http(
+    bundle_dir: Path, tmp_path: Path
+) -> None:
+    pushed: list[list[str]] = []
+
+    def vitruvio(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        pushed.append(list(args))
+        return _vitruvio(args)
+
+    _load(bundle_dir, FakeCompute(), tmp_path, runner=vitruvio, insecure=None)
+    assert "--insecure" not in pushed[0] and "--no-insecure" not in pushed[0]
 
 
 def test_skipping_brains_keeps_the_last_receipt_s_digests(bundle_dir: Path, tmp_path: Path) -> None:

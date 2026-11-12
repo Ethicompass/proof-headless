@@ -30,6 +30,20 @@ def canonical_digest(payload: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _is_declaration(payload: Any) -> bool:
+    """The shape of Lens's `DeclaredContext`, as far as a loader can check without Lens: a
+    `lens_declaration/` contract version and a list of sections each naming a field and its text."""
+    if not isinstance(payload, dict):
+        return False
+    if not str(payload.get("contract_version", "")).startswith(DECLARATION_VERSION):
+        return False
+    sections = payload.get("sections")
+    return isinstance(sections, list) and all(
+        isinstance(s, dict) and isinstance(s.get("field"), str) and isinstance(s.get("text"), str)
+        for s in sections
+    )
+
+
 def _paths(bundle: Bundle) -> list[tuple[str, Path]]:
     named: list[tuple[str, Path]] = [(f"catalogue {e.name}", e.path) for e in bundle.catalogues]
     named += [(f"profile {e.name}", e.path) for e in bundle.profiles]
@@ -65,8 +79,10 @@ def check(bundle: Bundle, secret_names: frozenset[str]) -> list[Problem]:
     """Every problem found, in manifest order; empty means the bundle may be loaded."""
     problems: list[Problem] = []
     for where, path in _paths(bundle):
-        if not path.resolve().is_relative_to(bundle.root):
-            problems.append(Problem(where, f"{path} is outside the bundle"))
+        inside = [path, *sorted(path.rglob("*"))] if path.is_dir() else [path]
+        for item in inside:
+            if not item.resolve().is_relative_to(bundle.root):
+                problems.append(Problem(where, f"{item} resolves outside the bundle"))
     for entry in bundle.catalogues:
         where = f"catalogue {entry.name}"
         if not entry.path.is_dir():
@@ -111,9 +127,14 @@ def check(bundle: Bundle, secret_names: frozenset[str]) -> list[Problem]:
         payload = _json(declaration.path, where, problems)
         if payload is None:
             continue
-        version = payload.get("contract_version", "") if isinstance(payload, dict) else ""
-        if not str(version).startswith(DECLARATION_VERSION):
-            problems.append(Problem(where, f"not a Lens declaration ({DECLARATION_VERSION}...)"))
+        if not _is_declaration(payload):
+            problems.append(
+                Problem(
+                    where,
+                    f"not a Lens declaration: needs contract_version {DECLARATION_VERSION}..., "
+                    f"and sections of {{field, text}} strings",
+                )
+            )
         digest = canonical_digest(payload)
         if declaration.path.name != digest:
             problems.append(Problem(where, f"must be named by its canonical digest, {digest}"))
