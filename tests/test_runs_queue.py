@@ -78,10 +78,10 @@ def test_no_more_runs_are_in_flight_than_the_concurrency_allows(tmp_path: Path) 
     assert fake.in_flight_max == 2
 
 
-def test_a_run_yield_closed_or_still_runs_is_adopted_and_never_posted(tmp_path: Path) -> None:
+def test_a_run_yield_closed_or_is_measuring_is_adopted_and_never_posted(tmp_path: Path) -> None:
     fake = FakeYield({"done": HAPPY, "busy": HAPPY, "new": HAPPY})
     fake.preload("done", len(HAPPY) - 1)
-    fake.preload("busy", 1)
+    fake.preload("busy", 3)
     fake.manifests["done"] = {"metrics": [{"metric_id": "bias", "status": "ran"}]}
     clock = Clock()
     queue = _queue(tmp_path, fake, _specs(tmp_path, "done", "busy", "new"), clock=clock)
@@ -115,13 +115,94 @@ def test_resume_continues_without_posting_a_finished_run_again(tmp_path: Path) -
     assert sorted(fake.posts) == ["r1", "r2", "r3"]
 
 
-def test_a_crash_between_the_post_and_the_save_is_adopted_on_resume(tmp_path: Path) -> None:
+def test_a_crash_between_the_post_and_the_save_reposts_identically(tmp_path: Path) -> None:
+    """An attacking run is posted again: Yield answers 202 while its driver lives, and the run
+    goes on as one run."""
     fake = FakeYield({"r1": HAPPY})
     fake.preload("r1", 1)
     clock = Clock()
     queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), clock=clock)
     assert _run(queue, clock).succeeded
-    assert fake.posts == []
+    assert fake.posts == ["r1"]
+    assert fake.attempts["r1"] == 1
+
+
+def test_an_accepted_run_whose_dispatch_failed_is_posted_again(tmp_path: Path) -> None:
+    """A 503 after the spec was frozen leaves a run reading `accepted` with no driver; the next
+    tick posts it again rather than waiting for the stall timer."""
+    fake = FakeYield({"r1": HAPPY}, post_answers={"r1": [503]})
+    clock = Clock()
+    policy = Policy(stall_after=timedelta(hours=5))
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), policy=policy, clock=clock)
+    queue.tick()
+    assert "r1" in fake.driverless
+    queue.tick()
+    assert "r1" not in fake.driverless
+    assert fake.posts == ["r1", "r1"]
+    assert _run(queue, clock).succeeded
+
+
+def test_a_relaunch_keeps_its_slot_until_yield_shows_the_new_attempt(tmp_path: Path) -> None:
+    """Yield reads the old attempt's `failed` for a while after the re-POST; that is not a
+    second failure, and the run keeps its slot."""
+    dies_once = [status("attacking", 3), status("failed", 3, liveness="dead")]
+    dies_once += [status("attacking", 6), status("complete", 10)]
+    fake = FakeYield({"r1": dies_once, "r2": HAPPY}, relaunch_delay=4)
+    clock = Clock()
+    policy = Policy(concurrency=1, retries=1)
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1", "r2"), policy=policy, clock=clock)
+    state = _run(queue, clock)
+    assert state.succeeded
+    assert state.entry("r1").retries == 1
+    assert fake.posts == ["r1", "r1", "r2"]
+    assert fake.in_flight_max == 1
+
+
+def test_a_relaunch_that_never_begins_is_a_failure(tmp_path: Path) -> None:
+    dies = [status("attacking", 3), status("failed", 3, liveness="dead")]
+    fake = FakeYield({"r1": dies}, relaunch_delay=1000)
+    clock = Clock(step=timedelta(minutes=1))
+    policy = Policy(retries=1, relaunch_grace=timedelta(minutes=5))
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), policy=policy, clock=clock)
+    state = _run(queue, clock)
+    assert state.entry("r1").state is RunState.FAILED
+    assert fake.posts == ["r1", "r1"]
+    assert any(e.kind == "relaunch_missing" for e in queue.store.events())
+
+
+def test_a_re_post_sends_the_bytes_yield_first_accepted(tmp_path: Path) -> None:
+    script = [status("attacking", 3), status("failed", 3), status("complete", 10)]
+    fake = FakeYield({"r1": script})
+    specs = _specs(tmp_path, "r1")
+    clock = Clock()
+    queue = _queue(tmp_path, fake, specs, clock=clock)
+    queue.tick()
+    specs["r1"].write_text(json.dumps({"run_id": "r1", "metric_ids": ["re-rendered"]}))
+    state = _run(queue, clock)
+    assert state.succeeded
+    assert fake.posts == ["r1", "r1"]
+    assert any(e.kind == "spec_changed" for e in queue.store.events())
+
+
+def test_a_409_from_a_run_yield_holds_follows_it_instead_of_closing_it(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": HAPPY})
+    fake.preload("r1", 1)
+    fake.frozen["r1"] = {"run_id": "r1", "metric_ids": ["another"]}
+    clock = Clock()
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), clock=clock)
+    state = _run(queue, clock)
+    assert state.succeeded
+    assert state.entry("r1").reposts_blocked
+    assert fake.posts == ["r1"]
+    assert any(e.kind == "conflict" for e in queue.store.events())
+
+
+def test_a_spec_without_a_webhook_is_warned_about_once(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": HAPPY})
+    clock = Clock()
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), clock=clock)
+    _run(queue, clock)
+    assert [e.kind for e in queue.store.events()].count("no_webhook") == 1
 
 
 def test_a_failed_run_is_posted_again_then_given_up(tmp_path: Path) -> None:
@@ -156,7 +237,7 @@ def test_a_failed_run_that_resumes_completes(tmp_path: Path) -> None:
 
 
 def test_a_stalled_attack_is_posted_again_and_reported(tmp_path: Path) -> None:
-    stuck = [status("attacking", 4)] * 30 + [status("complete", 10)]
+    stuck = [status("attacking", 4)] * 5 + [status("complete", 10)]
     fake = FakeYield({"r1": stuck})
     clock = Clock(step=timedelta(minutes=5))
     policy = Policy(stall_after=timedelta(minutes=15), stall_resubmits=1)
@@ -166,7 +247,7 @@ def test_a_stalled_attack_is_posted_again_and_reported(tmp_path: Path) -> None:
     assert fake.posts == ["r1", "r1"]
     assert state.entry("r1").stall_resubmits == 1
     events = queue.store.events()
-    assert any(e.kind == "anomaly.stalled" for e in events)
+    assert any(e.kind == "stalled" and e.severity == "warning" for e in events)
     assert any("without progress" in e.message for e in events if e.kind == "submitted")
 
 
@@ -185,7 +266,7 @@ def test_a_measuring_run_is_never_posted_again_however_long(tmp_path: Path) -> N
     assert fake.posts == ["r1"]
 
 
-@pytest.mark.parametrize(("code", "state"), [(409, RunState.REFUSED), (422, RunState.REFUSED)])
+@pytest.mark.parametrize(("code", "state"), [(400, RunState.REFUSED), (422, RunState.REFUSED)])
 def test_a_refused_spec_closes_the_run_without_retrying(
     tmp_path: Path, code: int, state: RunState
 ) -> None:
@@ -263,3 +344,48 @@ def test_an_outage_is_logged_when_it_starts_and_when_it_ends(tmp_path: Path) -> 
     assert kinds.count("unreachable") == 1
     assert kinds.count("reachable") == 1
     assert fake.posts == ["r1"]
+
+
+def test_a_run_that_never_advances_closes_as_stalled_and_the_queue_ends(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": [status("attacking", 4)]})
+    clock = Clock(step=timedelta(minutes=5))
+    policy = Policy(stall_after=timedelta(minutes=15), stall_resubmits=2)
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), policy=policy, clock=clock)
+    state = _run(queue, clock)
+    assert state.done
+    assert state.entry("r1").state is RunState.STALLED
+    assert fake.posts == ["r1"] * 3
+
+
+def test_a_resumed_queue_does_not_report_old_log_lines_again(tmp_path: Path) -> None:
+    from proof_headless.runs.observe import Container, LogLine, Observation
+
+    fake = FakeYield({"r1": [status("attacking", n) for n in range(30)]})
+    clock = Clock()
+    lines: list[LogLine] = []
+    driver = Container("yield-driver-r1", "running")
+
+    def observe(ids: list[str], statuses: dict[str, object]) -> Observation:
+        return Observation(
+            at=clock(), containers={driver.name: driver}, logs={driver.name: list(lines)}
+        )
+
+    specs = _specs(tmp_path, "r1")
+    first = _queue(tmp_path, fake, specs, clock=clock)
+    first.observe = observe  # type: ignore[assignment]
+    first.tick()
+    clock.sleep(0)
+    lines.append(LogLine(clock(), "RateLimitError"))
+    first.tick()
+    crashed = first.store.read()
+    assert crashed is not None
+
+    resumed = _queue(tmp_path, fake, specs, clock=clock, state=crashed)
+    resumed.observe = observe  # type: ignore[assignment]
+    clock.sleep(0)
+    resumed.tick()
+    clock.sleep(0)
+    lines.append(LogLine(clock(), "RateLimitError"))
+    resumed.tick()
+    reported = [e for e in resumed.store.events() if e.kind == "anomaly.rate_limited"]
+    assert len(reported) == 2

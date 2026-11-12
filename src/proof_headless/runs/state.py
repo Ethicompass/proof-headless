@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from proof_headless import paths
 
 QUEUE_FILE = "queue.json"
+SUBMITTED_DIR = "submitted"
 EVENTS_FILE = "events.jsonl"
 LOCK_FILE = "queue.lock"
 
@@ -57,10 +58,13 @@ class RunState(StrEnum):
     COMPLETE = "complete"
     FAILED = "failed"
     REFUSED = "refused"
-    """Yield's gate refused the spec, or the run id is frozen with another one."""
+    """Yield's gate refused the spec before the queue ever had it accepted."""
+    STALLED = "stalled"
+    """It stopped advancing before measuring and every re-POST was spent. Yield may still hold it
+    in flight; the queue stops waiting so that a night of runs ends."""
 
 
-TERMINAL = frozenset({RunState.COMPLETE, RunState.FAILED, RunState.REFUSED})
+TERMINAL = frozenset({RunState.COMPLETE, RunState.FAILED, RunState.REFUSED, RunState.STALLED})
 
 
 class Entry(BaseModel):
@@ -87,6 +91,14 @@ class Entry(BaseModel):
     finished_at: str | None = None
     retries: int = 0
     """Re-POSTs after Yield read the run as failed."""
+    relaunch_attempt: str | None = None
+    relaunch_at: str | None = None
+    """Set by a re-POST of a failed run: the attempt Yield showed then, and when. Yield keeps
+    reading `failed` until the relaunched driver announces a new attempt, so until the attempt
+    changes (or a grace period passes) `failed` means "relaunch pending", not "failed again"."""
+    reposts_blocked: bool = False
+    """A re-POST was answered 409: Yield holds a different spec under this id. The run is followed
+    without posting it again."""
     stall_resubmits: int = 0
     """Re-POSTs after the run stopped advancing before measuring."""
     submit_failures: int = 0
@@ -105,6 +117,11 @@ class QueueState(BaseModel):
     started_at: str
     concurrency: int = Field(ge=1)
     runs: list[Entry]
+    observed_at: str | None = None
+    """The last time the queue looked at the job containers. A resumed queue reports only log
+    lines newer than this, so the night's 429s are not logged a second time."""
+    log_marks: dict[str, str] = Field(default_factory=dict)
+    """Per job container, the newest log line the queue has read."""
 
     def entry(self, run_id: str) -> Entry:
         for item in self.runs:
@@ -158,6 +175,13 @@ class Store:
         self.queue_path = directory / QUEUE_FILE
         self.events_path = directory / EVENTS_FILE
         self.lock_path = directory / LOCK_FILE
+        self.submitted_dir = directory / SUBMITTED_DIR
+
+    def submitted(self, run_id: str) -> Path:
+        """The spec exactly as Yield first accepted it for `run_id`. Every re-POST sends these
+        bytes: Yield compares a retry with the frozen spec whole, so a spec re-rendered since would
+        be answered 409."""
+        return self.submitted_dir / f"{run_id}.json"
 
     def read(self) -> QueueState | None:
         if not self.queue_path.exists():
