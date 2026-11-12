@@ -1,0 +1,21 @@
+name: Release Please
+
+# main is the only branch that produces a version. A merge here opens a release PR; merging that PR
+# cuts the tag, the GitHub release and the changelog.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

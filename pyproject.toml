@@ -1,0 +1,129 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proof-headless"
+version = "0.1.0"
+description = "The Ethi Proof appliance CLI: self-hosted models, the Yield and Lens stack, client bundles and runs."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.15",
+    "rich>=13.9",
+    "textual>=8.0",
+]
+
+[project.scripts]
+proof = "proof_headless.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/proof_headless"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+]
+
+# ---------------------------------------------------------------------------
+# Style
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID", "RUF"]
+ignore = ["B008"]  # Typer's Option() and Argument() in defaults are the framework's idiom
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "appliance: needs the real appliance host (GPU, docker daemon, served models)",
+]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+# ---------------------------------------------------------------------------
+# Commits
+# ---------------------------------------------------------------------------
+# The scope is mandatory: the group is not closed with `?`. Scopes mirror the `area:` labels, so a
+# commit names the part of the appliance it changes.
+
+[tool.commitizen]
+name = "cz_customize"
+allowed_prefixes = ["Merge", "Revert"]
+
+[tool.commitizen.customize]
+schema = "<type>(<scope>): <description>"
+schema_pattern = "(?s)(feat|fix|docs|style|refactor|perf|test|ci|chore|revert)\\((cli|models|stack|bundle|runs|lens|evidence|docs|ci|deps|repo|main|develop)\\)!?:\\s[^\\n\\r]+(\\n\\n.*)?"
+message_template = "{{change_type}}({{scope}}): {{message}}"
+
+[[tool.commitizen.customize.questions]]
+type = "list"
+name = "change_type"
+message = "Select the type of change:"
+choices = [
+    { value = "feat", name = "feat: A new feature" },
+    { value = "fix", name = "fix: A bug fix" },
+    { value = "docs", name = "docs: Documentation only" },
+    { value = "style", name = "style: Formatting" },
+    { value = "refactor", name = "refactor: Code refactoring" },
+    { value = "perf", name = "perf: Performance improvement" },
+    { value = "test", name = "test: Adding tests" },
+    { value = "ci", name = "ci: CI/CD changes" },
+    { value = "chore", name = "chore: Other changes" },
+    { value = "revert", name = "revert: Revert a previous commit" },
+]
+
+[[tool.commitizen.customize.questions]]
+type = "list"
+name = "scope"
+message = "Select the scope (mandatory):"
+choices = [
+    { value = "cli", name = "cli: the command surface, console output and the TUI shell" },
+    { value = "models", name = "models: the models manifest, vLLM serving and doctor probes" },
+    { value = "stack", name = "stack: Yield, Lens and the registry, the lock and secrets" },
+    { value = "bundle", name = "bundle: client bundles and spec rendering" },
+    { value = "runs", name = "runs: queueing, watching and re-measuring runs" },
+    { value = "lens", name = "lens: Lens results for Yield runs" },
+    { value = "evidence", name = "evidence: the engagement's evidence package" },
+    { value = "docs", name = "docs: documentation and ADRs" },
+    { value = "ci", name = "ci: CI/CD configs" },
+    { value = "deps", name = "deps: dependency updates" },
+    { value = "repo", name = "repo: root-level config and tooling" },
+    { value = "main", name = "main: reserved for release-please's own commits" },
+]
+
+[[tool.commitizen.customize.questions]]
+type = "input"
+name = "message"
+message = "Commit description:"
