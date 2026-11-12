@@ -137,7 +137,7 @@ def test_a_model_in_a_restart_loop_fails_fast_with_its_log(fake: FakeCompose) ->
     fake.crash_loops = frozenset({"chat"})
     result = runner.invoke(app, ["models", "up", *MANIFEST])
     assert result.exit_code == 1
-    assert "restarting" in result.output and "CUDA out of memory" in result.output
+    assert "restarts" in result.output and "CUDA out of memory" in result.output
     assert fake.started() == ["chat"]
 
 

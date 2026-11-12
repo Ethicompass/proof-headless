@@ -176,9 +176,15 @@ def wait_healthy(
             state = compose.ps().get(model.name)
             if state is not None and state.health == "healthy":
                 return
-            if state is not None and (state.state in STOPPED or state.health == "unhealthy"):
+            restarted = compose.restarts(model.name) if state is not None else 0
+            if state is not None and (
+                state.state in STOPPED or state.health == "unhealthy" or restarted
+            ):
                 tail = compose.logs(model.name, tail=40)
-                err.print(f"[fail]{model.name} did not come up ({state.state}, {state.health}).")
+                err.print(
+                    f"[fail]{model.name} did not come up "
+                    f"({state.state}, {state.health or 'no health'}, {restarted} restarts).[/fail]"
+                )
                 err.print(tail, markup=False, highlight=False)
                 raise typer.Exit(1)
             if clock() > deadline:
