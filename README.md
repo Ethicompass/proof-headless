@@ -28,7 +28,7 @@ uv run proof --help
 | `proof spec render` | Renders Yield run specs from a bundle's run matrix and role bindings | available |
 | `proof run` | Queues, watches and re-measures a matrix of runs | planned (#7) |
 | `proof lens` | Makes sure every Yield run has its Lens result | available |
-| `proof evidence` | Exports a checksummed evidence package | planned (#9) |
+| `proof evidence` | Exports a checksummed evidence package | available |
 
 ## Serve the models
 
@@ -77,6 +77,25 @@ dead container holding the run's name is recorded first (exit code, last log lin
 environment value of 8 or more characters redacted) under
 `$PROOF_HOME/bundles/<client>/lens/kills/`, then removed. It then waits for the result
 (`--timeout`).
+
+## Export the evidence
+
+```sh
+proof evidence export acme              # to $PROOF_HOME/exports/acme-<time>
+proof evidence verify <package-dir>     # or: cd <package-dir> && sha256sum -c SHA256SUMS
+```
+
+The package holds the bundle's receipt and rendered specs, the models manifest and compose file,
+`appliance.lock` when present, every running container's image digests, what each model server
+reports at `/version`, the doctor's reports, and per run Yield's status and manifest, the run's
+objects in Yield's store (traces, dataset) and the Lens result. Its README lists the layout and
+every gap. The store is read over its S3 API with `YIELD_S3_ACCESS_KEY` and `YIELD_S3_SECRET_KEY`
+from the secrets file; without them the traces are a recorded gap. The export is refused, and
+nothing is written, when any value of the secrets file appears in any file, as written,
+JSON-escaped, percent-encoded or base64-encoded; zstd traces are scanned decompressed, and one that
+does not decompress refuses the package too. The refusal names the file and the secret, never the
+value. Values shorter than 8 characters are too short to match without refusing ordinary text:
+they are not looked for, and the export names those secrets on stderr and in `index.json`.
 
 Read commands take `--json`. Results go to standard output, and messages for the operator go to
 standard error.
