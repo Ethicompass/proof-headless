@@ -209,8 +209,25 @@ class Queue:
         self.log("submitted", why, run_id=entry.run_id)
 
     def _conflict(self, entry: Entry, detail: str) -> None:
-        """409: Yield froze a different spec under this id. It has the run, so the run is followed
-        as Yield holds it rather than closed while it may still be attacking."""
+        """409: Yield froze a different spec under this id.
+
+        The 409 is Yield's own whole-spec comparison (`_fields_that_differ`, lenient only about
+        what its gate resolves); a matching spec answers 202 instead. Yield's API reports no digest
+        of a frozen spec before its manifest exists, so there is nothing finer to compare.
+
+        On a first POST it means the run id already belongs to another request: the run is
+        refused, since following it would report another spec's results as this one's. On a
+        re-POST, Yield accepted this queue's spec before, so the run is followed as Yield holds it
+        rather than closed while it may still be attacking.
+        """
+        if entry.submitted_at is None:
+            self._close(
+                entry,
+                RunState.REFUSED,
+                f"Yield holds a different spec under this run id; render with a new run id "
+                f"({detail})",
+            )
+            return
         entry.reposts_blocked = True
         status = self.client.status(entry.run_id)
         message = (

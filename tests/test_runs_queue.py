@@ -184,16 +184,18 @@ def test_a_re_post_sends_the_bytes_yield_first_accepted(tmp_path: Path) -> None:
     assert any(e.kind == "spec_changed" for e in queue.store.events())
 
 
-def test_a_409_from_a_run_yield_holds_follows_it_instead_of_closing_it(tmp_path: Path) -> None:
-    fake = FakeYield({"r1": HAPPY})
-    fake.preload("r1", 1)
+def test_a_409_on_a_re_post_follows_the_run_instead_of_closing_it(tmp_path: Path) -> None:
+    stuck = [status("attacking", 4)] * 5 + [status("complete", 10)]
+    fake = FakeYield({"r1": stuck})
+    clock = Clock(step=timedelta(minutes=5))
+    policy = Policy(stall_after=timedelta(minutes=15))
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), policy=policy, clock=clock)
+    queue.tick()
     fake.frozen["r1"] = {"run_id": "r1", "metric_ids": ["another"]}
-    clock = Clock()
-    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), clock=clock)
     state = _run(queue, clock)
     assert state.succeeded
     assert state.entry("r1").reposts_blocked
-    assert fake.posts == ["r1"]
+    assert fake.posts == ["r1", "r1"]
     assert any(e.kind == "conflict" for e in queue.store.events())
 
 
@@ -389,3 +391,27 @@ def test_a_resumed_queue_does_not_report_old_log_lines_again(tmp_path: Path) -> 
     resumed.tick()
     reported = [e for e in resumed.store.events() if e.kind == "anomaly.rate_limited"]
     assert len(reported) == 2
+
+
+def test_a_409_on_a_first_post_refuses_the_run(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": HAPPY})
+    fake.preload("r1", 1)
+    fake.frozen["r1"] = {"run_id": "r1", "metric_ids": ["another"]}
+    clock = Clock()
+    queue = _queue(tmp_path, fake, _specs(tmp_path, "r1"), clock=clock)
+    state = _run(queue, clock)
+    entry = state.entry("r1")
+    assert entry.state is RunState.REFUSED
+    assert "render with a new run id" in (entry.error or "")
+    assert fake.posts == ["r1"]
+
+
+def test_a_first_post_matching_what_yield_froze_is_accepted(tmp_path: Path) -> None:
+    fake = FakeYield({"r1": HAPPY})
+    fake.preload("r1", 1)
+    specs = _specs(tmp_path, "r1")
+    fake.frozen["r1"] = json.loads(specs["r1"].read_text())
+    clock = Clock()
+    queue = _queue(tmp_path, fake, specs, clock=clock)
+    assert _run(queue, clock).succeeded
+    assert fake.posts == ["r1"]
