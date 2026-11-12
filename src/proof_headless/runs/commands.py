@@ -323,6 +323,25 @@ def snapshot(board: Board) -> dict[str, Any]:
     }
 
 
+def _watcher(store: Store, *, one_shot: bool) -> Detector:
+    """The detector a watch starts with.
+
+    A watch that keeps sampling reads log lines only from its launch: the history is in the
+    queue's event log, which it shows. A single sample has no later sample to see news in, so it
+    reads from the queue's last look and marks, or the whole tail when no queue has looked.
+    """
+    if not one_shot:
+        return Detector(since=datetime.now(UTC))
+    recorded = store.read()
+    detector = Detector()
+    if recorded is not None and recorded.observed_at is not None:
+        detector.since = datetime.fromisoformat(recorded.observed_at)
+        detector.read_until.update(
+            {name: datetime.fromisoformat(mark) for name, mark in recorded.log_marks.items()}
+        )
+    return detector
+
+
 @app.command()
 def watch(
     directory: Path = typer.Argument(..., help="The bundle's directory."),
@@ -350,7 +369,7 @@ def watch(
         client=client_name,
         run_ids=_rendered(client_name),
         observe=observer,
-        detector=Detector(since=datetime.now(UTC)),
+        detector=_watcher(store, one_shot=as_json),
     )
     if as_json:
         out.print_json(json.dumps(snapshot(sampler.sample())))

@@ -76,7 +76,7 @@ def _docker(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     if args[1] == "ps":
         row = {"Names": "yield-driver-r1", "State": "running", "Status": "Up 2 minutes"}
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps(row) + "\n", stderr="")
-    stamp = _later().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     log = f"{stamp} openai.RateLimitError: Error code: 429\n"
     return subprocess.CompletedProcess(args, 0, stdout=log, stderr="")
 
@@ -261,9 +261,19 @@ def test_watch_falls_back_to_plain_without_a_terminal(fake: FakeYield) -> None:
     assert "r1 attacking" in result.stdout
 
 
-def test_watch_json_prints_one_snapshot(fake: FakeYield) -> None:
+def test_watch_json_prints_one_snapshot(fake: FakeYield, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The log lines it reads were all written before it started, as on a real host."""
     _spec("r1")
     fake.preload("r1", 1)
+    an_hour_ago = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def old_logs(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if args[1] == "logs":
+            line = f"{an_hour_ago} openai.RateLimitError: Error code: 429\n"
+            return subprocess.CompletedProcess(args, 0, stdout=line, stderr="")
+        return _docker(args)
+
+    monkeypatch.setattr(commands, "JobContainers", lambda: JobContainers(runner=old_logs))
     result = runner.invoke(app, ["run", "watch", str(EXAMPLE), "--json"])
     assert result.exit_code == 0, result.output
     snapshot = json.loads(result.stdout)
