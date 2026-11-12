@@ -24,7 +24,7 @@ uv run proof --help
 | `proof models` | Serves the models in a manifest with vLLM, within a memory budget | available |
 | `proof doctor` | Probes every served model the way runs use it | available (models; stack probes come with #4) |
 | `proof stack` | Brings up Yield, Lens and the brain registry from pinned images | planned (#4) |
-| `proof bundle` | Validates and loads a client bundle | planned (#5) |
+| `proof bundle` | Validates and loads a client bundle (see `examples/bundle-acme`) | available |
 | `proof spec render` | Renders Yield run specs from a run matrix and the model roles | planned (#6) |
 | `proof run` | Queues, watches and re-measures a matrix of runs | planned (#7) |
 | `proof lens` | Makes sure every Yield run has its Lens result | planned (#8) |

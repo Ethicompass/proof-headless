@@ -1,0 +1,33 @@
+# A fictitious client's bundle, the shape every bundle takes. Paths are relative to this file.
+client = "acme"
+language = "en-US"
+secrets = ["ACME_TARGET_KEY"]
+matrix = "matrix.toml"
+
+[context]
+domain = "customer support for ACME, a fictitious appliance retailer"
+tone = "a customer writing in the first person"
+
+[[catalogues]]
+name = "acme-support"
+path = "catalogues/acme-support"
+
+[[profiles]]
+name = "acme-assistant"
+path = "profiles/acme-assistant.json"
+
+[[priors]]
+name = "acme-phrasings"
+path = "priors/acme-phrasings.json"
+
+[[mappings]]
+name = "acme-dimensions"
+path = "mappings/acme-dimensions.json"
+
+[[brains]]
+name = "acme"
+config = "brain/vitruvio.toml"
+repository = "acme/acme-eval"
+
+[[declarations]]
+path = "declarations/4de3a5f0f4ab4018120026a2769752de8cf5b050afd52bbd551e4b6c0f8c80a6"
