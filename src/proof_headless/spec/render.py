@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from proof_headless.bundle import loader
 from proof_headless.bundle.loader import Loaded, Piece
 from proof_headless.bundle.manifest import Bundle
+from proof_headless.endpoints import LENS_WEBHOOK
 from proof_headless.models.manifest import Manifest, ModelEntry, Role
 from proof_headless.models.render import CONTAINER_PORT
 from proof_headless.spec.matrix import Kind, Matrix, Roles, Run
@@ -270,9 +271,7 @@ class Renderer:
             spec["realism_prior"] = prior
         spec["replicas"] = run.replicas
         spec["budget"] = self._budget(run, why)
-        webhook = self._setting(run, "webhook_url")
-        if webhook is not None:
-            spec["webhook_url"] = webhook
+        spec["webhook_url"] = self._setting(run, "webhook_url") or LENS_WEBHOOK
         declaration = self._declaration(run, why)
         if declaration is not None:
             spec["target_declaration"] = declaration
