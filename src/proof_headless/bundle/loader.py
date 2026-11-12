@@ -1,14 +1,15 @@
 """Publishing a bundle into a running appliance, and the receipt that says what was published.
 
 Each piece goes where its service reads it: catalogues, profiles, priors and mappings to Yield's
-compute (`POST /catalogues`, `/profiles`, `/priors`, `/mappings`, the same bodies Yield's seed
-sends), brains to the appliance's registry through `vitruvio dist push`, declarations into the
+compute (`POST /catalogues?contract=...`, `/profiles`, `/priors`, `/mappings`, the bodies Yield's
+seed sends), brains to the appliance's registry through `vitruvio dist push`, declarations into the
 directory Lens's declaration source serves. Compute answers an unchanged asset with the version it
 already holds, so loading a bundle twice publishes nothing new.
 
-The receipt records every piece's version or digest. It is what `proof spec render` pins run specs
-to, and part of the engagement's evidence: which catalogue version measured, which brain digest
-grounded the probes.
+The receipt records every piece's version or digest, and whether the load completed. It is what
+`proof spec render` pins run specs to, and part of the engagement's evidence. A load that stops
+part way still writes one, marked incomplete with the reason, because the pieces it did publish
+are live in the services and a receipt that predates them would claim otherwise.
 """
 
 from __future__ import annotations
@@ -24,40 +25,45 @@ from typing import Any
 
 import httpx
 
-from proof_headless.bundle.manifest import Brain, Bundle, Entry
+from proof_headless.bundle.manifest import Brain, Bundle, Catalogue
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 
 @dataclass(frozen=True)
 class Loaded:
-    """One published piece."""
+    """One published piece. `carried` marks one this load did not publish but kept from the last."""
 
     kind: str
     name: str
     version: int | None = None
     digest: str | None = None
     created: bool | None = None
+    carried: bool = False
 
 
 @dataclass
 class Receipt:
-    """What a load published, in order."""
+    """What a load published, in order, and whether it got to the end."""
 
     client: str
     at: str = field(default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds"))
     loaded: list[Loaded] = field(default_factory=list)
+    complete: bool = False
+    error: str | None = None
 
     def document(self) -> dict[str, Any]:
         return {
             "client": self.client,
             "at": self.at,
+            "complete": self.complete,
+            "error": self.error,
             "loaded": [asdict(item) for item in self.loaded],
         }
 
 
 class LoadFailed(RuntimeError):
-    """A service refused a piece of the bundle, or could not be reached."""
+    """A service refused a piece of the bundle, could not be reached, or answered nonsense."""
 
 
 def _post(client: httpx.Client, path: str, body: dict[str, Any], what: str) -> dict[str, Any]:
@@ -67,11 +73,16 @@ def _post(client: httpx.Client, path: str, body: dict[str, Any], what: str) -> d
         raise LoadFailed(f"{what}: compute could not be reached: {error}") from None
     if response.status_code >= 400:
         raise LoadFailed(f"{what}: compute answered {response.status_code}: {response.text[:500]}")
-    answer: dict[str, Any] = response.json()
+    try:
+        answer = response.json()
+    except json.JSONDecodeError:
+        raise LoadFailed(f"{what}: compute answered no JSON: {response.text[:200]}") from None
+    if not isinstance(answer, dict):
+        raise LoadFailed(f"{what}: compute answered {type(answer).__name__}, not an object")
     return answer
 
 
-def catalogue_body(entry: Entry) -> dict[str, Any]:
+def catalogue_body(entry: Catalogue) -> dict[str, Any]:
     """The body compute's `POST /catalogues` takes, sidecars included when present."""
     body: dict[str, Any] = {
         "name": entry.name,
@@ -85,24 +96,19 @@ def catalogue_body(entry: Entry) -> dict[str, Any]:
         sidecar = entry.path / f"{filename}.json"
         if sidecar.is_file():
             value = json.loads(sidecar.read_text())
-            body[key] = value["needs_base"] if key == "needs_base" else value
+            if key == "needs_base":
+                if not isinstance(value, dict) or "needs_base" not in value:
+                    raise LoadFailed(f"catalogue {entry.name}: grounding.json has no needs_base")
+                value = value["needs_base"]
+            body[key] = value
     return body
 
 
-def push_brain(brain: Brain, registry: str, runner: Runner) -> Loaded:
+def push_brain(brain: Brain, registry: str, runner: Runner, *, insecure: bool) -> Loaded:
     """`vitruvio dist push` the brain to `registry/<repository>` and read back its digest."""
-    reference = f"{registry}/{brain.repository}"
-    args = [
-        "vitruvio",
-        "dist",
-        "push",
-        "--config",
-        str(brain.config),
-        "--brain",
-        brain.name,
-        "--json",
-        reference,
-    ]
+    args = ["vitruvio", "dist", "push", "--config", str(brain.config), "--brain", brain.name]
+    args += ["--insecure" if insecure else "--no-insecure", "--json"]
+    args.append(f"{registry}/{brain.repository}")
     result = runner(args)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()[-500:]
@@ -111,9 +117,11 @@ def push_brain(brain: Brain, registry: str, runner: Runner) -> Loaded:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError:
         raise LoadFailed(f"brain {brain.name}: vitruvio answered no JSON") from None
-    data = envelope.get("data", envelope) if isinstance(envelope, dict) else {}
-    digest = data.get("digest") or data.get("manifest_digest") if isinstance(data, dict) else None
-    return Loaded("brain", brain.name, digest=str(digest) if digest else None)
+    data = envelope.get("data") if isinstance(envelope, dict) else None
+    digest = data.get("digest") if isinstance(data, dict) else None
+    if not digest:
+        raise LoadFailed(f"brain {brain.name}: vitruvio's answer carries no digest")
+    return Loaded("brain", brain.name, digest=str(digest))
 
 
 def load(
@@ -123,10 +131,17 @@ def load(
     registry: str,
     declarations_dir: Path,
     runner: Runner,
+    insecure: bool,
+    previous: Receipt | None = None,
     skip_brains: bool = False,
     progress: Callable[[str], None] = lambda _: None,
 ) -> Receipt:
-    """Publish every piece of `bundle`, stopping at the first refusal."""
+    """Publish every piece of `bundle`, stopping at the first refusal.
+
+    The returned receipt is complete, or carries the refusal as its error. With `skip_brains`, the
+    brains of `previous` are carried over (marked `carried`), so the receipt still pins the digests
+    a run needs.
+    """
     receipt = Receipt(client=bundle.client)
 
     def published(kind: str, name: str, answer: dict[str, Any]) -> None:
@@ -134,34 +149,59 @@ def load(
             Loaded(kind, name, answer.get("version"), answer.get("digest"), answer.get("created"))
         )
 
-    for entry in bundle.catalogues:
-        progress(f"catalogue {entry.name}")
-        published(
-            "catalogue",
-            entry.name,
-            _post(client, "/catalogues", catalogue_body(entry), f"catalogue {entry.name}"),
-        )
-    for entry in bundle.profiles:
-        progress(f"profile {entry.name}")
-        body = {"name": entry.name, "profile": json.loads(entry.path.read_text())}
-        published("profile", entry.name, _post(client, "/profiles", body, f"profile {entry.name}"))
-    for entry in bundle.priors:
-        progress(f"prior {entry.name}")
-        body = {"name": entry.name, "phrasings": json.loads(entry.path.read_text())}
-        published("prior", entry.name, _post(client, "/priors", body, f"prior {entry.name}"))
-    for entry in bundle.mappings:
-        progress(f"mapping {entry.name}")
-        body = {"name": entry.name, "mapping": json.loads(entry.path.read_text())}
-        published("mapping", entry.name, _post(client, "/mappings", body, f"mapping {entry.name}"))
-    if not skip_brains:
-        for brain in bundle.brains:
-            progress(f"brain {brain.name}")
-            receipt.loaded.append(push_brain(brain, registry, runner))
-    declarations_dir.mkdir(parents=True, exist_ok=True)
-    for declaration in bundle.declarations:
-        progress(f"declaration {declaration.path.name[:12]}")
-        shutil.copyfile(declaration.path, declarations_dir / declaration.path.name)
-        receipt.loaded.append(
-            Loaded("declaration", declaration.path.name, digest=f"sha256:{declaration.path.name}")
-        )
+    try:
+        for catalogue in bundle.catalogues:
+            progress(f"catalogue {catalogue.name}")
+            what = f"catalogue {catalogue.name}"
+            route = f"/catalogues?contract={catalogue.contract}"
+            published(
+                "catalogue", catalogue.name, _post(client, route, catalogue_body(catalogue), what)
+            )
+        for entry in bundle.profiles:
+            progress(f"profile {entry.name}")
+            body = {"name": entry.name, "profile": json.loads(entry.path.read_text())}
+            published(
+                "profile", entry.name, _post(client, "/profiles", body, f"profile {entry.name}")
+            )
+        for entry in bundle.priors:
+            progress(f"prior {entry.name}")
+            body = {"name": entry.name, "phrasings": json.loads(entry.path.read_text())}
+            published("prior", entry.name, _post(client, "/priors", body, f"prior {entry.name}"))
+        for entry in bundle.mappings:
+            progress(f"mapping {entry.name}")
+            body = {"name": entry.name, "mapping": json.loads(entry.path.read_text())}
+            published(
+                "mapping", entry.name, _post(client, "/mappings", body, f"mapping {entry.name}")
+            )
+        if skip_brains:
+            kept = [item for item in (previous.loaded if previous else []) if item.kind == "brain"]
+            receipt.loaded += [Loaded("brain", i.name, digest=i.digest, carried=True) for i in kept]
+        else:
+            for brain in bundle.brains:
+                progress(f"brain {brain.name}")
+                receipt.loaded.append(push_brain(brain, registry, runner, insecure=insecure))
+        declarations_dir.mkdir(parents=True, exist_ok=True)
+        for declaration in bundle.declarations:
+            progress(f"declaration {declaration.path.name[:12]}")
+            shutil.copyfile(declaration.path, declarations_dir / declaration.path.name)
+            digest = f"sha256:{declaration.path.name}"
+            receipt.loaded.append(Loaded("declaration", declaration.path.name, digest=digest))
+    except LoadFailed as error:
+        receipt.error = str(error)
+        return receipt
+    receipt.complete = True
     return receipt
+
+
+def read_receipt(path: Path) -> Receipt | None:
+    """The receipt at `path`, or `None` when there is none."""
+    if not path.is_file():
+        return None
+    document = json.loads(path.read_text())
+    return Receipt(
+        client=document["client"],
+        at=document["at"],
+        loaded=[Loaded(**item) for item in document["loaded"]],
+        complete=bool(document.get("complete", True)),
+        error=document.get("error"),
+    )

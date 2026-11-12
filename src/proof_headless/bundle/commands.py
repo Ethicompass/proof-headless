@@ -75,9 +75,20 @@ def validate(
 @app.command(name="load")
 def load_command(
     directory: Path = typer.Argument(..., help="The bundle's directory."),
-    compute: str = typer.Option("http://127.0.0.1:8081", "--compute", help="Yield compute's URL."),
-    registry: str = typer.Option("localhost:5051", "--registry", help="The brain registry."),
-    skip_brains: bool = typer.Option(False, "--skip-brains", help="Do not push brains."),
+    compute: str = typer.Option(
+        "http://127.0.0.1:8081", "--compute", help="Yield compute on this appliance."
+    ),
+    registry: str = typer.Option(
+        "localhost:5051", "--registry", help="The brain registry on this appliance."
+    ),
+    insecure: bool | None = typer.Option(
+        None,
+        "--insecure/--no-insecure",
+        help="Push brains over plain HTTP. Default: yes for a localhost or 127.0.0.1 registry.",
+    ),
+    skip_brains: bool = typer.Option(
+        False, "--skip-brains", help="Do not push brains; keep the last receipt's digests."
+    ),
 ) -> None:
     """Validate, then publish every piece of the bundle and record a receipt."""
     bundle = _bundle(directory)
@@ -87,31 +98,31 @@ def load_command(
             err.print(f"[fail]{problem.where}:[/fail] {problem.what}")
         err.print("Fix these with [b]proof bundle validate[/b] before loading.")
         raise typer.Exit(1)
-    try:
-        with (
-            httpx.Client(base_url=compute, timeout=120.0) as client,
-            err.status("Loading") as status,
-        ):
-            receipt = loader.load(
-                bundle,
-                client,
-                registry=registry,
-                declarations_dir=paths.home() / "declarations",
-                runner=docker.run,
-                skip_brains=skip_brains,
-                progress=lambda what: status.update(f"Loading {what}"),
-            )
-    except loader.LoadFailed as error:
-        err.print(f"[fail]Load stopped.[/fail] {error}")
-        raise typer.Exit(1) from None
+    plain = insecure if insecure is not None else registry.startswith(("localhost", "127.0.0.1"))
     path = receipt_path(bundle)
+    with httpx.Client(base_url=compute, timeout=120.0) as client, err.status("Loading") as status:
+        receipt = loader.load(
+            bundle,
+            client,
+            registry=registry,
+            declarations_dir=paths.home() / "declarations",
+            runner=docker.run,
+            insecure=plain,
+            previous=loader.read_receipt(path),
+            skip_brains=skip_brains,
+            progress=lambda what: status.update(f"Loading {what}"),
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(receipt.document(), indent=2) + "\n")
     table = Table(title=f"Loaded {bundle.client}", title_justify="left")
     for column in ("kind", "name", "version", "digest", "new"):
         table.add_column(column)
     for item in receipt.loaded:
-        new = {True: "yes", False: "unchanged", None: ""}[item.created]
+        new = "kept" if item.carried else {True: "yes", False: "unchanged", None: ""}[item.created]
         table.add_row(item.kind, item.name, str(item.version or ""), (item.digest or "")[:19], new)
     out.print(table)
     err.print(f"[muted]Receipt: {path}[/muted]")
+    if not receipt.complete:
+        err.print(f"[fail]Load stopped.[/fail] {receipt.error}")
+        err.print("The receipt is marked incomplete; fix the piece and load again.")
+        raise typer.Exit(1)
