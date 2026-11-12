@@ -109,7 +109,7 @@ def test_write_copies_the_seed_beside_the_compose_file(tmp_path: Path) -> None:
     path = render.write(locks.load(LOCK), tmp_path / "stack", SECRETS)
     assert (path.parent / "seed" / "yield" / "seed.sh").is_file()
     assert (path.parent / "seed" / "lens" / "seed.py").is_file()
-    assert (path.parent / "declarations").is_dir()
+    assert (tmp_path / "declarations").is_dir(), "where `proof bundle load` puts declarations"
     assert not (path.parent / "seed" / "yield" / "catalogues" / "bpd").exists()
 
 

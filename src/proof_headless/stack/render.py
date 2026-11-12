@@ -83,6 +83,10 @@ def reconfigures(name: str) -> bool:
 
 
 SEED_PACKAGE = "proof_headless.stack"
+DECLARATIONS = "../declarations"
+"""`$PROOF_HOME/declarations`, relative to the compose file under `$PROOF_HOME/stack`: where
+`proof bundle load` places a bundle's declarations, each named by the hex of its digest, which is
+the path Lens's Reader asks the declaration source for (`GET /declarations/{hex}`)."""
 
 
 def _py_health(url: str) -> dict[str, Any]:
@@ -276,7 +280,7 @@ def _lens_services(lock: Lock, secrets_file: Path) -> dict[str, Any]:
         "lens-declarations": {
             "image": lock.image("python").pinned,
             "command": ["python", "-m", "http.server", "8080", "--directory", "/srv"],
-            "volumes": ["./declarations:/srv/declarations:ro"],
+            "volumes": [f"{DECLARATIONS}:/srv/declarations:ro"],
             "networks": [LENS_NET],
             "restart": "unless-stopped",
             "healthcheck": _py_health("http://localhost:8080/"),
@@ -354,8 +358,8 @@ def one_shot(document: dict[str, Any]) -> list[str]:
 
 
 def write(lock: Lock, directory: Path, secrets_file: Path) -> Path:
-    """Render `lock` to `directory/compose.yaml`, with the seed assets beside it and an empty
-    declarations directory, and return the compose file's path.
+    """Render `lock` to `directory/compose.yaml`, with the seed assets beside it, make sure the
+    declarations directory exists, and return the compose file's path.
 
     The seed is copied out of the package on every render, so the stack mounts the assets of the
     `proof` that rendered it, and a stale copy from an older version cannot linger.
@@ -366,7 +370,7 @@ def write(lock: Lock, directory: Path, secrets_file: Path) -> Path:
         shutil.rmtree(seed)
     with resources.as_file(resources.files(SEED_PACKAGE).joinpath("seed")) as packaged:
         shutil.copytree(packaged, seed, ignore=shutil.ignore_patterns("__pycache__"))
-    (directory / "declarations").mkdir(exist_ok=True)
+    (directory / DECLARATIONS).resolve().mkdir(parents=True, exist_ok=True)
     path = directory / "compose.yaml"
     path.write_text(yaml.safe_dump(compose(lock, secrets_file), sort_keys=False))
     return path

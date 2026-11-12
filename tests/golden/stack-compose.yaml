@@ -199,7 +199,7 @@ services:
     - --directory
     - /srv
     volumes:
-    - ./declarations:/srv/declarations:ro
+    - ../declarations:/srv/declarations:ro
     networks:
     - proof-lens
     restart: unless-stopped
