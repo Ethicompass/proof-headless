@@ -21,6 +21,8 @@ models:
     gpu_memory_utilization: 0.40
     roles: [chat]
     api: chat
+    # Verify on the box that this is the key the Lightning chat template reads.
+    reasoning_switch: enable_thinking
     args:
       - --mamba-backend=flashinfer
       - --mamba-cache-mode=align
