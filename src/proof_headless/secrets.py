@@ -3,8 +3,9 @@
 A dotenv file (`NAME=value` per line) readable only by its owner. `proof` refuses a file other
 users can read rather than warn, because a token that leaked is not un-leaked by a warning. The
 file is handed to `docker compose --env-file`, so compose substitutes `${NAME}` where a service
-declares it and nowhere else. `proof` itself asks only which names are present, and
-`proof secrets set` writes a value the operator typed without ever reading one back.
+declares it and nowhere else. `proof` itself asks which names are present, holds values in
+memory only where `values` says, and `proof secrets set` writes a value the operator typed without
+ever reading one back.
 """
 
 from __future__ import annotations
@@ -54,18 +55,29 @@ def names(path: Path) -> frozenset[str]:
     `NAME=` defines nothing: compose would substitute an empty string, and a gated download
     would fail minutes later with a 401 instead of being refused here. An absent file defines none.
     """
+    return frozenset(values(path))
+
+
+def values(path: Path) -> dict[str, str]:
+    """Every secret the file defines with a non-empty value, by name.
+
+    For the two places a value has to be held in memory: the evidence scan, which refuses a
+    package that contains one, and the store credentials an export signs its requests with. A
+    caller never prints, logs or writes what this returns; it names a secret by its key.
+    """
     if not path.exists():
-        return frozenset()
+        return {}
     check_private(path)
-    defined: set[str] = set()
+    defined: dict[str, str] = {}
     for raw in path.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         name, _, value = line.removeprefix("export ").partition("=")
-        if name.strip() and _value(value):
-            defined.add(name.strip())
-    return frozenset(defined)
+        parsed = _value(value)
+        if name.strip() and parsed:
+            defined[name.strip()] = parsed
+    return defined
 
 
 class SecretRefused(ValueError):
