@@ -30,7 +30,11 @@ def check_private(path: Path) -> None:
 
 
 def names(path: Path) -> frozenset[str]:
-    """The secret names the file defines, never their values. An absent file defines none."""
+    """The secret names the file defines with a non-empty value; the values are never returned.
+
+    `NAME=` defines nothing: compose would substitute an empty string, and a gated download
+    would fail minutes later with a 401 instead of being refused here. An absent file defines none.
+    """
     if not path.exists():
         return frozenset()
     check_private(path)
@@ -39,7 +43,7 @@ def names(path: Path) -> frozenset[str]:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        name = line.removeprefix("export ").split("=", 1)[0].strip()
-        if name:
-            defined.add(name)
+        name, _, value = line.removeprefix("export ").partition("=")
+        if name.strip() and value.strip().strip("'\"").strip():
+            defined.add(name.strip())
     return frozenset(defined)
