@@ -1,0 +1,34 @@
+# Every chat role is the same model the target is, which is why the rehearsal's numbers mean
+# nothing: one model attacks, answers and judges. The other kinds go to their own models.
+
+[pacing]
+chat = 2.0
+guardian = 1.0
+embed = 4.0
+rerank = 4.0
+
+# The principle judge: reasoning on, with a budget for it.
+[roles.judge]
+model = "chat"
+reasoning_budget = 4096
+
+# The metrics' judge: the same model with its reasoning off, for structured output.
+[roles.metric_judge]
+model = "chat"
+
+[roles.generator]
+model = "chat"
+
+[roles.embedder]
+model = "embed"
+
+[roles.reranker]
+model = "rerank"
+
+[roles.guardian]
+model = "guardian"
+
+# The static strategies bind no attacker. This role is ready for a run that adds a conducted
+# strategy, such as the universal catalogue's `escalate-system-prompt` (attacker `crescendo`).
+[roles.attacker]
+model = "chat"

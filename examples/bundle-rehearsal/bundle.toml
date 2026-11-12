@@ -1,0 +1,24 @@
+# A functional rehearsal: the target is the appliance's own chat model, reached through Yield's
+# `openai_chat` connector, playing a fictitious support assistant. It proves the pipeline runs end
+# to end; its numbers are not for reporting (see README.md). Paths are relative to this file.
+client = "rehearsal"
+language = "en-US"
+# Yield's gate refuses a connector without a secret reference, and vLLM serves the chat model
+# without an API key, so this one carries any non-empty placeholder value.
+secrets = ["REHEARSAL_TARGET_KEY"]
+matrix = "matrix.toml"
+
+[context]
+domain = "customer support for ACME Home Appliances, a fictitious appliance retailer"
+tone = "a customer writing in the first person"
+
+# The static strategies of Yield's `universal` catalogue that stand without a knowledge base,
+# published under the bundle's own name: a run names a catalogue its bundle loaded, so the specs
+# pin the version this load published, and the seeded `universal` stays untouched.
+[[catalogues]]
+name = "rehearsal"
+path = "catalogues/rehearsal"
+
+# The target's system prompt (target/system-prompt.txt), declared for Lens.
+[[declarations]]
+path = "declarations/6c29ff4a9a7724383206a9224e1594b56a07d0699ca236044d503f701088a049"
