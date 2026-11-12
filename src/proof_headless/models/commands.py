@@ -20,7 +20,7 @@ from rich.table import Table
 
 from proof_headless import paths, secrets
 from proof_headless.console import err, out
-from proof_headless.docker import Compose, ComposeFailed, Restarts, ServiceState
+from proof_headless.docker import Compose, ComposeFailed, Restarts, ServiceState, ensure_network
 from proof_headless.models import manifest as manifests
 from proof_headless.models import memory, render
 from proof_headless.models.manifest import Manifest, ManifestInvalid, ModelEntry
@@ -214,6 +214,8 @@ def up(
     _check_secrets(loaded, chosen)
     compose = compose_for(loaded)
     try:
+        if ensure_network(compose.runner, loaded.network):
+            err.print(f"[muted]Created the {loaded.network} network.[/muted]")
         states = compose.ps()
         running = frozenset(n for n, s in states.items() if s.state == "running")
         starting = frozenset(model.name for model in chosen)

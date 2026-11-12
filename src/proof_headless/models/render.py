@@ -2,8 +2,10 @@
 
 One service per model on one network, so Yield's and Lens's containers reach a model by its name
 (`http://<name>:8000/v1`) and the host reaches it on loopback only (`127.0.0.1:<port>`): a model
-server answers whoever reaches it, and nothing on the LAN should. Rendering is pure, so what would
-run can be read (`proof models render`) and tested without a docker daemon.
+server answers whoever reaches it, and nothing on the LAN should. The network is external, made
+by `proof models up` or `proof stack up`, whichever runs first (`docker.ensure_network`).
+Rendering is pure, so what would run can be read (`proof models render`) and tested without a
+docker daemon.
 """
 
 from __future__ import annotations
@@ -85,7 +87,7 @@ def compose(manifest: Manifest) -> dict[str, Any]:
     return {
         "name": PROJECT,
         "services": {model.name: service(model, manifest) for model in manifest.models},
-        "networks": {manifest.network: {"name": manifest.network}},
+        "networks": {manifest.network: {"name": manifest.network, "external": True}},
     }
 
 

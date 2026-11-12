@@ -21,6 +21,43 @@ def run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(list(args), capture_output=True, text=True, check=False)
 
 
+def docker(runner: Runner, *args: str) -> str:
+    """One `docker` command outside compose, raising `ComposeFailed` on a non-zero exit."""
+    full = ["docker", *args]
+    result = runner(full)
+    if result.returncode != 0:
+        raise ComposeFailed(full, result)
+    return result.stdout
+
+
+def ensure_network(runner: Runner, name: str) -> bool:
+    """Create the network `name` unless it exists, and say whether it was created.
+
+    `proof-models` is shared by the models' project and the stack's, and either may come up
+    first. Compose refuses a network another project (or `docker network create`) made unless it
+    is declared `external`, so both projects declare it external and whichever starts first
+    creates it here. Neither `down` removes it, which is right: the other project may still be
+    using it.
+    """
+    try:
+        docker(runner, "network", "inspect", name)
+    except ComposeFailed:
+        docker(runner, "network", "create", name)
+        return True
+    return False
+
+
+def _published(publishers: object) -> tuple[str, ...]:
+    """`docker compose ps` publishers as `host:port->container/protocol`, published ones only."""
+    ports: list[str] = []
+    for entry in publishers if isinstance(publishers, list) else []:
+        if not isinstance(entry, dict) or not entry.get("PublishedPort"):
+            continue
+        host = f"{entry.get('URL') or '0.0.0.0'}:{entry['PublishedPort']}"
+        ports.append(f"{host}->{entry.get('TargetPort')}/{entry.get('Protocol') or 'tcp'}")
+    return tuple(dict.fromkeys(ports))
+
+
 class ComposeFailed(RuntimeError):
     """`docker compose` exited non-zero."""
 
@@ -38,6 +75,12 @@ class ServiceState:
     """`running`, `exited`, `restarting`, ..."""
     health: str
     """`healthy`, `starting`, `unhealthy`, or empty when the service has no health check."""
+    image: str = ""
+    """The image reference the container was created from, as the compose file names it."""
+    ports: tuple[str, ...] = ()
+    """Published ports, `host:port->container/protocol`."""
+    exit_code: int | None = None
+    """The exit code of a container that has exited; `None` while it runs."""
 
 
 @dataclass(frozen=True)
@@ -95,12 +138,25 @@ class Compose:
                 continue
             rows = json.loads(line)
             for row in rows if isinstance(rows, list) else [rows]:
+                state = str(row.get("State", ""))
                 states[row["Service"]] = ServiceState(
                     service=row["Service"],
-                    state=str(row.get("State", "")),
+                    state=state,
                     health=str(row.get("Health", "")),
+                    image=str(row.get("Image", "")),
+                    ports=_published(row.get("Publishers")),
+                    exit_code=int(row.get("ExitCode", 0)) if state in {"exited", "dead"} else None,
                 )
         return states
+
+    def up_all(self) -> None:
+        """Create and start every service, detached. Compose itself waits on each `depends_on`
+        condition (a store healthy, a seed exited 0) before starting what depends on it."""
+        self._call("up", "--detach", "--remove-orphans")
+
+    def pull(self) -> None:
+        """Pull every service's image, so a slow download is not mistaken for a slow start."""
+        self._call("pull", "--quiet")
 
     def restarts(self, service: str) -> Restarts:
         """The service's container and how many times its restart policy restarted it.

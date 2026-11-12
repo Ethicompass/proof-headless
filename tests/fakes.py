@@ -25,7 +25,15 @@ class FakeCompose:
     generations: dict[str, int] = field(default_factory=dict)
     recreate_on_up: bool = False
     """Whether `up` replaces the container, as compose does when its configuration changed."""
-    state: dict[str, dict[str, str]] = field(default_factory=dict)
+    services: tuple[str, ...] = ()
+    """What `up` with no service starts: every service of the project, as `up_all` asks."""
+    one_shots: frozenset[str] = frozenset()
+    """Services that run once: after `up` they report `exited` with code 0, or 1 when in `fails`."""
+    images: dict[str, str] = field(default_factory=dict)
+    ports: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    missing_networks: set[str] = field(default_factory=set)
+    """Networks `docker network inspect` does not find, until `docker network create` makes one."""
+    state: dict[str, dict[str, object]] = field(default_factory=dict)
     polls: dict[str, int] = field(default_factory=dict)
     calls: list[list[str]] = field(default_factory=list)
 
@@ -36,21 +44,26 @@ class FakeCompose:
             service = args[-1].split("-", 1)[1].rsplit("-", 1)[0]
             count = str(self.restarts.get(service, 0))
             return subprocess.CompletedProcess(args, 0, stdout=count, stderr="")
-        command = next(a for a in args[2:] if a in {"up", "ps", "logs", "down"})
+        if args[:3] == ["docker", "network", "inspect"] and args[3] in self.missing_networks:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="not found")
+        if args[:3] == ["docker", "network", "create"]:
+            self.missing_networks.discard(args[3])
+        if args[1] in {"network", "pull"}:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        command = next(a for a in args[2:] if a in {"up", "ps", "logs", "down", "pull"})
         stdout = ""
         if command == "up":
-            service = args[-1]
-            self.state[service] = {"Service": service, "State": "running", "Health": "starting"}
-            if self.recreate_on_up:
-                self.generations[service] = self.generations.get(service, 0) + 1
-                self.restarts[service] = 0
-            self.polls[service] = 0
+            started = [args[-1]] if not args[-1].startswith("-") else list(self.services)
+            for service in started:
+                self._start(service)
         elif command == "ps" and "--quiet" in args:
             service = args[-1]
             generation = self.generations.get(service, 0)
             stdout = f"id-{service}-{generation}\n" if service in self.state else ""
         elif command == "ps":
             for service, row in self.state.items():
+                if service in self.one_shots:
+                    continue
                 if service in self.crash_loops:
                     self.restarts[service] = self.restarts.get(service, 0) + 1
                     continue
@@ -64,6 +77,21 @@ class FakeCompose:
         elif command == "down":
             self.state.clear()
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    def _start(self, service: str) -> None:
+        row: dict[str, object] = {"Service": service, "State": "running", "Health": "starting"}
+        if service in self.one_shots:
+            code = 1 if service in self.fails else 0
+            row = {"Service": service, "State": "exited", "Health": "", "ExitCode": code}
+        if service in self.images:
+            row["Image"] = self.images[service]
+        if service in self.ports:
+            row["Publishers"] = self.ports[service]
+        self.state[service] = row
+        if self.recreate_on_up:
+            self.generations[service] = self.generations.get(service, 0) + 1
+            self.restarts[service] = 0
+        self.polls[service] = 0
 
     def started(self) -> list[str]:
         return [call[-1] for call in self.calls if "up" in call]

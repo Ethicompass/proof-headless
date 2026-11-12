@@ -196,3 +196,11 @@ def test_a_recreated_container_starts_its_restart_count_from_zero(fake: FakeComp
     fake.recreate_on_up = True
     result = runner.invoke(app, ["models", "up", *MANIFEST, "--only", "chat"])
     assert result.exit_code == 0, result.output
+
+
+@pytest.mark.usefixtures("token")
+def test_up_creates_the_models_network_the_stack_shares_when_absent(fake: FakeCompose) -> None:
+    fake.missing_networks.add("proof-models")
+    result = runner.invoke(app, ["models", "up", *MANIFEST])
+    assert result.exit_code == 0, result.output
+    assert ["docker", "network", "create", "proof-models"] in fake.calls
