@@ -76,6 +76,11 @@ class ModelEntry(BaseModel):
     start_period_seconds: int = Field(default=1200, ge=0)
     """How long the health check waits before counting failures: download plus load plus
     compilation, which for a 30B model on first start is tens of minutes."""
+    reasoning_switch: str | None = None
+    """The `chat_template_kwargs` key that turns the model's reasoning on and off, when it has
+    one (`enable_thinking` for the Nemotron chat templates). Run specs use it to ask one served
+    model with reasoning on for the control judge and off for structured output; `proof doctor`
+    checks that the switch does what it says."""
 
     @field_validator("args")
     @classmethod

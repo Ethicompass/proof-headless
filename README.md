@@ -22,7 +22,7 @@ uv run proof --help
 |---|---|---|
 | `proof version` | Versions of proof and the host | available |
 | `proof models` | Serves the models in a manifest with vLLM, within a memory budget | available |
-| `proof doctor` | Probes every model and service a run depends on | planned (#3) |
+| `proof doctor` | Probes every served model the way runs use it | available (models; stack probes come with #4) |
 | `proof stack` | Brings up Yield, Lens and the brain registry from pinned images | planned (#4) |
 | `proof bundle` | Validates and loads a client bundle | planned (#5) |
 | `proof spec render` | Renders Yield run specs from a run matrix and the model roles | planned (#6) |
@@ -44,6 +44,11 @@ proof models status        # container state and health per model
 proof models logs chat     # the last lines of one model's log
 proof models down          # stop them; downloaded weights stay cached
 ```
+
+`proof doctor` then probes each model the way a run will use it: chat models for logprobs with
+twenty alternatives, JSON-schema output and their reasoning switch, the guard for its verdict, the
+embedder and the reranker for sane answers. It exits non-zero on any failure and writes a JSON
+report under `$PROOF_HOME/evidence/`.
 
 Each model is reachable from other containers as `http://<name>:8000/v1` on the
 `proof-models` network, and from the host on `127.0.0.1:<port>` only.

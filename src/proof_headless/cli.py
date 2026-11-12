@@ -16,6 +16,7 @@ from rich.table import Table
 
 from proof_headless import __version__
 from proof_headless.console import out
+from proof_headless.doctor import doctor
 from proof_headless.models.commands import app as models_app
 
 app = typer.Typer(
@@ -37,6 +38,7 @@ def interactive() -> bool:
 
 
 app.add_typer(models_app, name="models")
+app.command()(doctor)
 
 
 @app.callback(invoke_without_command=True)
