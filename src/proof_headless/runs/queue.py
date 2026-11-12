@@ -16,9 +16,17 @@ Every re-POST sends the bytes Yield first accepted, kept beside the queue, since
 compared with the frozen spec whole. A run that Yield reads as failed is posted again up to
 `retries` times: the relaunched driver resumes from what the store holds and replays closed traces
 without calling the target. Until the relaunch announces a new attempt, Yield still reads the old
-one's `failed`; the run keeps its slot meanwhile. A run whose phase and counts stop moving before
-it measures is posted again the same way, up to `stall_resubmits` times, and then closed as
-`stalled` so the queue ends. A measuring run is never re-posted: a stalled measure is reported.
+one's `failed`; the run keeps its slot meanwhile.
+
+A run advances while its phase or counts move or its driver logs a new line: the last
+conversations of a run can keep its closed count flat for many minutes while its driver calls the
+model every few seconds. A run that does neither for its stall bound is read by its driver
+container. While the driver runs, or may run because the containers cannot be read, the run is
+busy or hung inside Yield's own process, and a re-POST would only be answered 202: the quiet is
+reported, again each time it lasts another bound, and the run is followed. Only when the listing
+shows the driver gone is it posted again the same way as a failed run, up to `stall_resubmits`
+times, and then closed as `stalled` so the queue ends. A measuring run is never re-posted: a
+stalled measure is reported.
 """
 
 from __future__ import annotations
@@ -62,6 +70,8 @@ class Policy:
     retries: int = 1
     """Identical re-POSTs of a run Yield reads as failed, before the queue gives up on it."""
     stall_after: timedelta = STALL_AFTER
+    """How long a run may go without progress before it is read as stalled, unless its budget's
+    `max_wall_seconds` is shorter."""
     stall_resubmits: int = 2
     submit_attempts: int = 5
     """Submissions answered 503, or not answered, before the run is marked failed."""
@@ -89,6 +99,28 @@ def read_specs(directory: Path, only: Iterable[str] = ()) -> dict[str, Path]:
     if missing:
         raise KeyError(f"no rendered spec for {missing} in {directory}")
     return {run: found[run] for run in wanted} if wanted else found
+
+
+STALL_FLOOR = timedelta(minutes=5)
+"""The shortest stall bound a budget can set: a bound of a few polls would read a run as stalled
+between two looks at its driver's log."""
+
+
+def wall_budget(path: Path) -> timedelta | None:
+    """The `budget.max_wall_seconds` of the spec at `path`, when it sets one.
+
+    A run that has not advanced for as long as its whole budget allows is past anything Yield
+    would let it do, so it caps the run's stall bound.
+    """
+    try:
+        spec = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    budget = spec.get("budget") if isinstance(spec, dict) else None
+    seconds = budget.get("max_wall_seconds") if isinstance(budget, dict) else None
+    if isinstance(seconds, int) and not isinstance(seconds, bool) and seconds > 0:
+        return timedelta(seconds=seconds)
+    return None
 
 
 def new_state(client: str, specs: dict[str, Path], concurrency: int, now: datetime) -> QueueState:
@@ -128,6 +160,12 @@ class Queue:
 
     def __post_init__(self) -> None:
         self.detector.stall_after = self.policy.stall_after
+        for entry in self.state.runs:
+            kept = self.store.submitted(entry.run_id)
+            source = kept if kept.exists() else self.specs.get(entry.run_id)
+            budget = wall_budget(source) if source is not None else None
+            if budget is not None and budget < self.policy.stall_after:
+                self.detector.stall_limits[entry.run_id] = max(budget, STALL_FLOOR)
         self.detector.since = parse(self.state.observed_at or self.state.started_at)
         self.detector.read_until.update(
             {name: parse(mark) for name, mark in self.state.log_marks.items()}
@@ -212,6 +250,7 @@ class Queue:
         entry.state = RunState.ACTIVE
         entry.submitted_at = entry.submitted_at or moment
         entry.progress_at = moment
+        entry.silent_reports = 0
         entry.submit_failures = 0
         self.detector.forget(entry.run_id)
         self.log("submitted", why, run_id=entry.run_id)
@@ -308,6 +347,7 @@ class Queue:
         if progress != entry.progress or entry.progress_at is None:
             entry.progress = progress
             entry.progress_at = stamp(self.now())
+            entry.silent_reports = 0
 
     def _complete(self, entry: Entry) -> None:
         try:
@@ -388,11 +428,36 @@ class Queue:
         else:
             self._close(entry, RunState.FAILED, why or "Yield reads the run as failed")
 
+    def _stall_limit(self, run_id: str) -> timedelta:
+        return self.detector.stall_limits.get(run_id, self.policy.stall_after)
+
+    def _silent(self, entry: Entry, quiet: timedelta, limit: timedelta) -> None:
+        """Report a run whose driver runs, or may run, but whose counts and log stand still, once
+        per bound it lasts. It is not posted again, since Yield answers 202 while a driver lives,
+        and not closed, since Yield may still finish it. Where the containers cannot be read the
+        queue does not end on its own: the operator reads the reports and stops it."""
+        if quiet < limit * (entry.silent_reports + 1):
+            return
+        entry.silent_reports += 1
+        minutes = int(quiet.total_seconds() // 60)
+        why = "its driver runs" if entry.driver else "the driver's container cannot be read"
+        self.log(
+            "driver_silent",
+            f"no progress and no driver log line for {minutes} min ({entry.progress}) while "
+            f"{why}; not posted again, still following it",
+            severity=Severity.WARNING,
+            run_id=entry.run_id,
+        )
+
     def _stalled(self, entry: Entry) -> None:
         if entry.progress_at is None:
             return
         quiet = self.now() - parse(entry.progress_at)
-        if quiet < self.policy.stall_after:
+        limit = self._stall_limit(entry.run_id)
+        if quiet < limit:
+            return
+        if entry.driver in (None, "running"):
+            self._silent(entry, quiet, limit)
             return
         minutes = int(quiet.total_seconds() // 60)
         if entry.stall_resubmits < self.policy.stall_resubmits and not entry.reposts_blocked:
@@ -482,6 +547,11 @@ class Queue:
         else:
             observation = Observation(at=self.now(), runs=statuses)
         found = self.detector.examine(observation)
+        for entry in self.state.active():
+            entry.driver = observation.driver(entry.run_id)
+            if entry.run_id in self.detector.driver_moved:
+                entry.progress_at = stamp(observation.at)
+                entry.silent_reports = 0
         self.state.observed_at = observation.at.isoformat()
         self.state.log_marks = {
             name: mark.isoformat() for name, mark in self.detector.read_until.items()

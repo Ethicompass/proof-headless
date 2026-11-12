@@ -86,6 +86,9 @@ class Observation:
     """Why the run statuses are missing, when Yield did not answer."""
     containers: dict[str, Container] = field(default_factory=dict)
     logs: dict[str, list[LogLine]] = field(default_factory=dict)
+    containers_read: bool = False
+    """Whether the job containers were listed, so that a run with none has none rather than
+    an unknown number."""
     docker_error: str | None = None
     models: dict[str, ServiceState | None] | None = None
     """Each declared model's container, `None` for one that has none. `None` as a whole when no
@@ -93,6 +96,14 @@ class Observation:
     models_error: str | None = None
     stack: dict[str, Service] | None = None
     """The stack's containers by service, `None` when the stack was not asked about."""
+
+    def driver(self, run_id: str) -> str | None:
+        """The state of the run's driver container, `absent` when the listing has none, and
+        `None` when the containers were not read."""
+        if not self.containers_read:
+            return None
+        found = self.containers.get(f"{DRIVER_PREFIX}{run_id}")
+        return found.state if found is not None else "absent"
 
 
 _TIMESTAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)?\s?(.*)$")
@@ -241,6 +252,7 @@ class Observer:
         logs: dict[str, list[LogLine]] = {}
         stack: dict[str, Service] | None = None
         docker_error = None
+        read = False
         if self.containers is not None:
             try:
                 if self.stack_project is not None:
@@ -249,6 +261,7 @@ class Observer:
                 containers = {name: c for name, c in every.items() if c.run_id in wanted}
                 for name in containers:
                     logs[name] = self.containers.logs(name)
+                read = True
             except DockerFailed as error:
                 docker_error = str(error)
         models: dict[str, ServiceState | None] | None = None
@@ -265,6 +278,7 @@ class Observer:
             yield_error=yield_error,
             containers=containers,
             logs=logs,
+            containers_read=read,
             docker_error=docker_error,
             models=models,
             models_error=models_error,
