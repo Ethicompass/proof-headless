@@ -9,7 +9,8 @@ The scan holds each value of the operator's secrets file in memory and nowhere e
 it in every file in the forms a value usually leaks in: as written, JSON-escaped, percent-encoded,
 and base64 (standard and URL-safe, padded or not, at each of the three byte alignments). A zstd
 file, which is how Yield stores its traces, is scanned decompressed, as a stream; one that does not
-decompress cannot be scanned and refuses the package as surely as a hit. A hit names the file and
+decompress, or ends before its last frame does, cannot be fully scanned and refuses the package as
+surely as a hit. A hit names the file and
 the secret, never the value. Values shorter than `MIN_SECRET_LENGTH` are not matched: a short
 value (a default access key id, a user name) is a substring of ordinary text, and matching it
 would refuse every package; such a secret is named as unscanned instead. Hex, and a value split
@@ -173,6 +174,35 @@ def _chunks(handle: BinaryIO) -> Iterator[bytes]:
         yield chunk
 
 
+def _frames(handle: BinaryIO) -> Iterator[bytes]:
+    """The decompressed content of every zstd frame in `handle`, as it decodes.
+
+    Frame by frame, so the end of the input is checked against the end of a frame: a streaming
+    reader stops quietly when the input ends mid-frame, and a trace cut short would be scanned as
+    far as it decodes and shipped with a valid checksum. Raises `zstandard.ZstdError` for a file
+    that ends inside a frame or holds none.
+    """
+    decompressor = zstandard.ZstdDecompressor()
+    current = decompressor.decompressobj()
+    fed = False
+    complete = 0
+    for chunk in _chunks(handle):
+        data = chunk
+        while data:
+            fed = True
+            output = current.decompress(data)
+            if output:
+                yield output
+            if not current.eof:
+                break
+            complete += 1
+            data = current.unused_data
+            current = decompressor.decompressobj()
+            fed = False
+    if fed or not complete:
+        raise zstandard.ZstdError("the input ends before its zstd frame does")
+
+
 def _contains(chunks: Iterable[bytes], patterns: Mapping[str, set[bytes]]) -> set[str]:
     """The names whose patterns occur in the stream, read chunk by chunk with an overlap one byte
     shorter than the longest pattern, so a value split across two chunks is still found."""
@@ -207,10 +237,7 @@ def scan(root: Path, secrets: Mapping[str, str]) -> Findings:
             handle.seek(0)
             if compressed or relative.suffix == ".zst":
                 try:
-                    reader = zstandard.ZstdDecompressor().stream_reader(
-                        handle, read_across_frames=True
-                    )
-                    hits = _contains(_chunks(reader), patterns)
+                    hits = _contains(_frames(handle), patterns)
                 except zstandard.ZstdError:
                     findings.unreadable.append(relative.as_posix())
                     continue

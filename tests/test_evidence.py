@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import shutil
 import subprocess
@@ -306,6 +307,33 @@ def test_a_trace_that_does_not_decompress_refuses_the_package(world: World) -> N
     assert result.exit_code == 1
     assert "does not decompress" in " ".join(result.output.split())
     assert not package_dir.exists()
+
+
+@pytest.mark.parametrize("cut", [4, 100, 900])
+def test_a_truncated_trace_refuses_the_package(world: World, cut: int) -> None:
+    lines = b"".join(
+        json.dumps({"turn": i, "text": hashlib.sha256(str(i).encode()).hexdigest()}).encode()
+        + b"\n"
+        for i in range(400)
+    )
+    whole = zstandard.ZstdCompressor(write_checksum=True).compress(lines)
+    assert len(whole) > cut
+    world.objects["runs/r1/traces/a1/0.jsonl.zst"] = whole[:-cut]
+    result, package_dir = export()
+    assert result.exit_code == 1
+    flat = " ".join(result.output.split())
+    assert "runs/r1/yield/store/traces/a1/0.jsonl.zst does not decompress" in flat
+    assert not package_dir.exists()
+
+
+def test_a_trace_of_several_frames_is_scanned_whole(tmp_path: Path) -> None:
+    root = tmp_path / "pkg"
+    root.mkdir()
+    value = "second-frame-secret"
+    data = zstandard.compress(b"first\n") + zstandard.compress(f"has {value}\n".encode())
+    (root / "t.jsonl.zst").write_bytes(data)
+    found = package.scan(root, {"S": value})
+    assert found.unreadable == [] and [leak.secret for leak in found.leaks] == ["S"]
 
 
 def test_a_value_split_across_read_chunks_is_found(tmp_path: Path) -> None:
