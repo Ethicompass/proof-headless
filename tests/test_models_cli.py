@@ -137,7 +137,7 @@ def test_a_model_in_a_restart_loop_fails_fast_with_its_log(fake: FakeCompose) ->
     fake.crash_loops = frozenset({"chat"})
     result = runner.invoke(app, ["models", "up", *MANIFEST])
     assert result.exit_code == 1
-    assert "restarting" in result.output and "CUDA out of memory" in result.output
+    assert "restarts" in result.output and "CUDA out of memory" in result.output
     assert fake.started() == ["chat"]
 
 
@@ -175,3 +175,12 @@ def test_a_manifest_over_budget_shows_the_shares_as_a_table(tmp_path: Path) -> N
     result = runner.invoke(app, ["models", "validate", "--manifest", str(path)])
     assert result.exit_code == 2
     assert "Memory shares" in result.output and "0.76" in result.output
+
+
+@pytest.mark.usefixtures("token")
+def test_restarts_from_an_earlier_failed_start_do_not_fail_a_retry(fake: FakeCompose) -> None:
+    fake.state["chat"] = {"Service": "chat", "State": "running", "Health": "starting"}
+    fake.polls["chat"] = 0
+    fake.restarts["chat"] = 7
+    result = runner.invoke(app, ["models", "up", *MANIFEST, "--only", "chat"])
+    assert result.exit_code == 0, result.output

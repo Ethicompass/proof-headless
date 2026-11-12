@@ -55,3 +55,15 @@ def test_down_removes_services_a_newer_manifest_dropped(tmp_path: Path) -> None:
     runner, seen = _answer()
     Compose("p", tmp_path / "c.yaml", runner=runner).down()
     assert seen[-1][-2:] == ["down", "--remove-orphans"]
+
+
+def test_restarts_reads_the_container_s_restart_count(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args))
+        stdout = "abc123\n" if "--quiet" in args else "3\n"
+        return subprocess.CompletedProcess(list(args), 0, stdout=stdout, stderr="")
+
+    assert Compose("p", tmp_path / "c.yaml", runner=runner).restarts("chat") == 3
+    assert calls[-1] == ["docker", "inspect", "--format", "{{.RestartCount}}", "abc123"]

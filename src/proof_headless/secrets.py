@@ -29,8 +29,22 @@ def check_private(path: Path) -> None:
         raise SecretsFileExposed(path, mode)
 
 
+def _value(raw: str) -> str:
+    """A dotenv value as compose reads it: quoted verbatim, or unquoted up to a ` #` comment."""
+    raw = raw.strip()
+    if raw[:1] in {"'", '"'} and raw.endswith(raw[0]) and len(raw) >= 2:
+        return raw[1:-1]
+    if raw.startswith("#"):
+        return ""
+    return raw.split(" #", 1)[0].strip()
+
+
 def names(path: Path) -> frozenset[str]:
-    """The secret names the file defines, never their values. An absent file defines none."""
+    """The secret names the file defines with a non-empty value; the values are never returned.
+
+    `NAME=` defines nothing: compose would substitute an empty string, and a gated download
+    would fail minutes later with a 401 instead of being refused here. An absent file defines none.
+    """
     if not path.exists():
         return frozenset()
     check_private(path)
@@ -39,7 +53,7 @@ def names(path: Path) -> frozenset[str]:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        name = line.removeprefix("export ").split("=", 1)[0].strip()
-        if name:
-            defined.add(name)
+        name, _, value = line.removeprefix("export ").partition("=")
+        if name.strip() and _value(value):
+            defined.add(name.strip())
     return frozenset(defined)

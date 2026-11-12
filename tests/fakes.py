@@ -19,7 +19,9 @@ class FakeCompose:
     polls_to_healthy: int = 2
     fails: frozenset[str] = frozenset()
     crash_loops: frozenset[str] = frozenset()
-    """Services that crash at start under `restart: unless-stopped`: `restarting`, never exited."""
+    """Services that crash while loading under `restart: unless-stopped`: docker brings them back
+    to `running` before most polls, so only their restart count shows it."""
+    restarts: dict[str, int] = field(default_factory=dict)
     state: dict[str, dict[str, str]] = field(default_factory=dict)
     polls: dict[str, int] = field(default_factory=dict)
     calls: list[list[str]] = field(default_factory=list)
@@ -27,16 +29,23 @@ class FakeCompose:
     def __call__(self, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         args = list(args)
         self.calls.append(args)
+        if args[:2] == ["docker", "inspect"]:
+            service = args[-1].removeprefix("id-")
+            count = str(self.restarts.get(service, 0))
+            return subprocess.CompletedProcess(args, 0, stdout=count, stderr="")
         command = next(a for a in args[2:] if a in {"up", "ps", "logs", "down"})
         stdout = ""
         if command == "up":
             service = args[-1]
             self.state[service] = {"Service": service, "State": "running", "Health": "starting"}
             self.polls[service] = 0
+        elif command == "ps" and "--quiet" in args:
+            service = args[-1]
+            stdout = f"id-{service}\n" if service in self.state else ""
         elif command == "ps":
             for service, row in self.state.items():
                 if service in self.crash_loops:
-                    row["State"] = "restarting"
+                    self.restarts[service] = self.restarts.get(service, 0) + 1
                     continue
                 if row["Health"] == "starting":
                     self.polls[service] += 1

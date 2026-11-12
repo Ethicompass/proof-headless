@@ -88,6 +88,21 @@ class Compose:
                 )
         return states
 
+    def restarts(self, service: str) -> int:
+        """How many times the service's container was restarted by its restart policy.
+
+        The one reliable sign of a crash loop: docker resets its restart backoff after any run of
+        ten seconds, so a model that dies minutes into loading is back to `running` almost
+        immediately and is seldom caught in `restarting`. No container is no restarts.
+        """
+        ids = self._call("ps", "--all", "--quiet", service).split()
+        if not ids:
+            return 0
+        result = self.runner(["docker", "inspect", "--format", "{{.RestartCount}}", ids[0]])
+        if result.returncode != 0:
+            raise ComposeFailed(["docker", "inspect", ids[0]], result)
+        return int(result.stdout.strip() or 0)
+
     def logs(self, service: str, *, tail: int = 200) -> str:
         """The last `tail` lines of one service's logs."""
         return self._call("logs", "--no-color", "--tail", str(tail), service)

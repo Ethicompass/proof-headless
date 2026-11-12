@@ -26,3 +26,10 @@ def test_a_file_others_can_read_is_refused(tmp_path: Path) -> None:
 
 def test_an_absent_file_defines_nothing(tmp_path: Path) -> None:
     assert names(tmp_path / "absent.env") == frozenset()
+
+
+def test_a_name_with_an_empty_value_is_not_defined(tmp_path: Path) -> None:
+    path = tmp_path / "secrets.env"
+    path.write_text("HF_TOKEN= # paste here\nQUOTED=''\nEMPTY=\nHASHED='a #b'\nTARGET_KEY=x # ok\n")
+    path.chmod(0o600)
+    assert names(path) == {"HASHED", "TARGET_KEY"}
