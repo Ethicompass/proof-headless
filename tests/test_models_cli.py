@@ -184,3 +184,15 @@ def test_restarts_from_an_earlier_failed_start_do_not_fail_a_retry(fake: FakeCom
     fake.restarts["chat"] = 7
     result = runner.invoke(app, ["models", "up", *MANIFEST, "--only", "chat"])
     assert result.exit_code == 0, result.output
+
+
+@pytest.mark.usefixtures("token")
+def test_a_recreated_container_starts_its_restart_count_from_zero(fake: FakeCompose) -> None:
+    """A fixed secret changes the configuration, so compose recreates the container whose old
+    count was 7; the new container's zero restarts are not a failure."""
+    fake.state["chat"] = {"Service": "chat", "State": "running", "Health": "starting"}
+    fake.polls["chat"] = 0
+    fake.restarts["chat"] = 7
+    fake.recreate_on_up = True
+    result = runner.invoke(app, ["models", "up", *MANIFEST, "--only", "chat"])
+    assert result.exit_code == 0, result.output

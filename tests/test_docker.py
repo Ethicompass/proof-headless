@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from proof_headless.docker import Compose, ComposeFailed
+from proof_headless.docker import Compose, ComposeFailed, Restarts
 
 
 def _answer(stdout: str = "", code: int = 0):  # type: ignore[no-untyped-def]
@@ -65,5 +65,13 @@ def test_restarts_reads_the_container_s_restart_count(tmp_path: Path) -> None:
         stdout = "abc123\n" if "--quiet" in args else "3\n"
         return subprocess.CompletedProcess(list(args), 0, stdout=stdout, stderr="")
 
-    assert Compose("p", tmp_path / "c.yaml", runner=runner).restarts("chat") == 3
+    found = Compose("p", tmp_path / "c.yaml", runner=runner).restarts("chat")
+    assert (found.container, found.count) == ("abc123", 3)
     assert calls[-1] == ["docker", "inspect", "--format", "{{.RestartCount}}", "abc123"]
+
+
+def test_restarts_since_a_baseline_belong_to_one_container() -> None:
+    assert Restarts("a", 9).since(Restarts("a", 7)) == 2
+    assert Restarts("b", 0).since(Restarts("a", 7)) == 0
+    assert Restarts("b", 2).since(Restarts("a", 7)) == 2
+    assert Restarts("a", 1).since(Restarts(None, 0)) == 1
