@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -142,7 +144,7 @@ def test_status_shows_each_service_s_digest_state_and_ports(fake: FakeCompose) -
 
 
 def test_status_after_render_reports_every_service_absent(fake: FakeCompose) -> None:
-    runner.invoke(app, ["stack", "render", *USE_LOCK])
+    runner.invoke(app, ["stack", "render", *USE_LOCK, "--write"])
     result = runner.invoke(app, ["stack", "status", "--json"])
     assert result.exit_code == 0, result.output
     rows = json.loads(result.stdout)["services"]
@@ -182,7 +184,7 @@ def test_down_stops_the_project(fake: FakeCompose) -> None:
 
 
 def test_logs_refuses_a_service_the_stack_does_not_have(fake: FakeCompose) -> None:
-    runner.invoke(app, ["stack", "render", *USE_LOCK])
+    runner.invoke(app, ["stack", "render", *USE_LOCK, "--write"])
     result = runner.invoke(app, ["stack", "logs", "nope"])
     assert result.exit_code == 2
 
@@ -191,3 +193,66 @@ def test_a_missing_lock_is_refused_with_how_to_make_one() -> None:
     result = runner.invoke(app, ["stack", "up", "--manifest", str(SPARK_MANIFEST)])
     assert result.exit_code == 2
     assert "proof stack pin" in _text(result.output)
+
+
+def _secrets(text: str) -> None:
+    path = paths.secrets_file()
+    path.write_text(text)
+    path.chmod(0o600)
+
+
+def _second_bundle(tmp_path: Path) -> Path:
+    copy = tmp_path / "beta"
+    shutil.copytree(EXAMPLE_BUNDLE, copy)
+    manifest = copy / "bundle.toml"
+    text = manifest.read_text().replace('"ACME_TARGET_KEY"', '"BETA_TARGET_KEY"')
+    manifest.write_text(re.sub(r'(?m)^client = ".*"$', 'client = "beta"', text))
+    return copy
+
+
+def _yield_names() -> set[str]:
+    environment = render.read(commands.stack_file())["services"]["yield-api"]["environment"]
+    return {name for name in environment if name.endswith("_TARGET_KEY")}
+
+
+def test_every_up_gives_yield_the_secrets_of_every_served_bundle(
+    fake: FakeCompose, tmp_path: Path
+) -> None:
+    _secrets("ACME_TARGET_KEY='a'\nBETA_TARGET_KEY='b'\n")
+    assert runner.invoke(app, ["stack", "up", *USE_LOCK, "-b", str(EXAMPLE_BUNDLE)]).exit_code == 0
+    beta = _second_bundle(tmp_path)
+    assert runner.invoke(app, ["stack", "up", *USE_LOCK, "-b", str(beta)]).exit_code == 0
+    assert _yield_names() == {"ACME_TARGET_KEY", "BETA_TARGET_KEY"}
+    assert runner.invoke(app, ["stack", "up", *USE_LOCK]).exit_code == 0
+    assert _yield_names() == {"ACME_TARGET_KEY", "BETA_TARGET_KEY"}
+    status = json.loads(runner.invoke(app, ["stack", "status", "--json"]).stdout)
+    assert set(status["bundles"]) == {"acme", "beta"}
+
+
+def test_forget_bundle_takes_its_secrets_out_on_the_next_up(
+    fake: FakeCompose, tmp_path: Path
+) -> None:
+    _secrets("ACME_TARGET_KEY='a'\nBETA_TARGET_KEY='b'\n")
+    beta = _second_bundle(tmp_path)
+    up = ["stack", "up", *USE_LOCK, "-b", str(EXAMPLE_BUNDLE), "-b", str(beta)]
+    assert runner.invoke(app, up).exit_code == 0
+    assert runner.invoke(app, ["stack", "forget-bundle", "acme"]).exit_code == 0
+    assert runner.invoke(app, ["stack", "up", *USE_LOCK]).exit_code == 0
+    assert _yield_names() == {"BETA_TARGET_KEY"}
+    assert runner.invoke(app, ["stack", "forget-bundle", "acme"]).exit_code == 2
+
+
+def test_up_with_no_bundle_warns_that_every_run_is_refused(fake: FakeCompose) -> None:
+    result = runner.invoke(app, ["stack", "up", *USE_LOCK])
+    assert result.exit_code == 0, result.output
+    assert "every run is refused" in _text(result.output)
+
+
+def test_render_previews_without_touching_the_running_stack_s_file(fake: FakeCompose) -> None:
+    _secrets("ACME_TARGET_KEY='a'\n")
+    assert runner.invoke(app, ["stack", "up", *USE_LOCK, "-b", str(EXAMPLE_BUNDLE)]).exit_code == 0
+    before = commands.stack_file().read_text()
+    result = runner.invoke(app, ["stack", "render", *USE_LOCK])
+    assert result.exit_code == 0, result.output
+    assert yaml.safe_load(result.stdout)["name"] == render.PROJECT
+    assert commands.stack_file().read_text() == before

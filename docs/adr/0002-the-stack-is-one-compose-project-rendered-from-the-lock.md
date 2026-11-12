@@ -17,7 +17,8 @@ make a shared network possible, but their compose files still need a checkout to
 
 `proof stack` renders one compose project, `proof-stack`, from `appliance.lock` and the models
 manifest, and runs it on the appliance with no checkout of Yield or Lens. Only `up` and `render`
-render; `status`, `logs` and `down` act on the file the stack was started from.
+render (`render` only with `--write`; it previews otherwise); `status`, `logs` and `down` act on
+the file the stack was started from.
 
 - **Services** follow Yield's and Lens's compose files with their co-location changes, with
   every image taken from the lock by digest, each store and API under a name of its own
@@ -38,7 +39,8 @@ render; `status`, `logs` and `down` act on the file the stack was started from.
   that each asset lands on the digest the stack pins, so a drifted copy fails `up`, not a run.
 - **Secrets, least privilege**: no service loads the operator's secrets file. It is compose's
   `--env-file`, and the template names what reaches a container: the store credentials, and for
-  Yield's API and compute exactly the secrets the bundles passed to `up` declare (a `YIELD_*` or
+  Yield's API and compute exactly the secrets the bundles the stack serves declare (recorded in
+  `stack/bundles.json`, so a later `up` does not drop an earlier client's) (a `YIELD_*` or
   `LENS_*` name is refused, being a setting). Lens gets none, because its only `*_REF` is the
   signing secret, mapped by name; `HF_TOKEN` stays with the models. `proof` writes a value only
   when the operator sets one, and never prints one.

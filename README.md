@@ -78,11 +78,14 @@ reasoning switch off. It refuses a manifest with no chat model. It renders compo
 either repository, and `status`, `logs` and `down` act on that file without rendering it again.
 
 No container loads the secrets file. Yield's API and compute get exactly the secrets the bundles
-passed with `--bundle` declare, and `up` refuses one the file does not define; Lens gets none.
+the stack serves declare, and `up` refuses one the file does not define; Lens gets none. `up
+--bundle <dir>` adds a bundle to `$PROOF_HOME/stack/bundles.json`, every later `up` keeps serving
+it, and `proof stack forget-bundle <client>` removes it. Without a bundle every run is refused at
+Yield's gate, which requires the connector's secret. `proof stack render` prints a preview and
+writes the running stack's file only with `--write`.
 Compose also substitutes the store credentials from the file when they are set there
 (`YIELD_S3_ACCESS_KEY`, `YIELD_S3_SECRET_KEY`, `LENS_S3_ACCESS_KEY`, `LENS_S3_SECRET_KEY`,
-`LENS_WEBHOOK_SIGNING_SECRET`), else the development defaults. Run `up` again after adding a
-bundle so Yield gets its secrets.
+`LENS_WEBHOOK_SIGNING_SECRET`), else the development defaults.
 
 | From the host | Port | From a job container |
 |---|---|---|

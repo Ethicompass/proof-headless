@@ -8,7 +8,9 @@ external to both projects), pulls the images the APIs launch per job (neither di
 starts the project and waits until every service is healthy and every seed exited 0.
 
 `status`, `logs` and `down` read the compose file the stack was started from and never re-render
-it, so a `pin` or a new manifest after `up` cannot change what they describe or stop.
+it, and `render` only previews unless told `--write`, so a `pin` or a new manifest after `up`
+cannot change what they describe or stop. The bundles the stack serves are recorded, so every
+`up` gives Yield the secrets of all of them, not only of the bundles on that command line.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import typer
+import yaml
 from rich.table import Table
 
 from proof_headless import paths
@@ -104,23 +107,63 @@ def started() -> tuple[Compose, dict[str, Any]]:
     return project(file), render.read(file)
 
 
-def _secret_names(directories: list[Path]) -> list[str]:
-    names: set[str] = set()
+def bundles_file() -> Path:
+    """The bundles the stack serves, by client, with the secret names each declared."""
+    return paths.home() / "stack" / "bundles.json"
+
+
+def served() -> dict[str, dict[str, Any]]:
+    """The recorded bundles: `{client: {"directory": ..., "secrets": [...]}}`.
+
+    Recorded because Yield's secrets are rendered into its services, and compose recreates
+    yield-api and yield-compute from the file on every `up`: rendered from that call's
+    `--bundle` flags alone, a later `up` would silently drop every earlier client's secrets.
+    """
+    path = bundles_file()
+    if not path.exists():
+        return {}
+    recorded: dict[str, dict[str, Any]] = json.loads(path.read_text())
+    return recorded
+
+
+def _record(entries: dict[str, dict[str, Any]]) -> None:
+    path = bundles_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n")
+
+
+def _with_bundles(directories: list[Path]) -> dict[str, dict[str, Any]]:
+    """The recorded bundles plus those in `directories`, each read now; nothing is written."""
+    entries = served()
     for directory in directories:
         try:
-            names |= set(bundles.load(directory).secrets)
+            bundle = bundles.load(directory)
         except BundleInvalid as error:
             err.print(f"[fail]Invalid bundle.[/fail] {error}")
             raise typer.Exit(2) from None
-    return sorted(names)
+        entries[bundle.client] = {
+            "directory": str(directory.resolve()),
+            "secrets": sorted(bundle.secrets),
+        }
+    return entries
 
 
-def _render(lock: Lock, manifest: Manifest, names: list[str]) -> Path:
+def secret_names(entries: dict[str, dict[str, Any]]) -> list[str]:
+    """The union of the secrets every served bundle declares: what Yield gets."""
+    return sorted({name for entry in entries.values() for name in entry["secrets"]})
+
+
+def _document(lock: Lock, manifest: Manifest, names: list[str]) -> dict[str, Any]:
     try:
-        return render.write(lock, manifest, stack_file().parent, names)
+        return render.compose(lock, manifest, names)
     except render.StackInvalid as error:
         err.print(f"[fail]Refused.[/fail] {error}")
         raise typer.Exit(2) from None
+
+
+def _render(lock: Lock, manifest: Manifest, names: list[str]) -> Path:
+    _document(lock, manifest, names)
+    return render.write(lock, manifest, stack_file().parent, names)
 
 
 def foreign_images(lock: Lock, platform: str) -> list[str]:
@@ -200,10 +243,24 @@ def render_command(
     lock: Path | None = LockOption,
     manifest: Path | None = ManifestOption,
     bundle: list[Path] = BundleOption,
+    write: bool = typer.Option(
+        False, "--write", help="Write it where `up` does, replacing the running stack's file."
+    ),
 ) -> None:
-    """Write the compose file `up` would start, and print its path."""
+    """Print the compose file `up` would start, for the served bundles plus any --bundle.
+
+    A preview by default: the file under `$PROOF_HOME/stack` is the one the running stack was
+    started from, and `status`, `logs` and `down` read it, so only `--write` replaces it.
+    """
     loaded = _load(lock)
-    out.print(str(_render(loaded, load_manifest(manifest), _secret_names(bundle))))
+    models = load_manifest(manifest)
+    names = secret_names(_with_bundles(bundle))
+    if not write:
+        document = _document(loaded, models, names)
+        text = yaml.safe_dump(document, sort_keys=False)
+        out.print(text, markup=False, highlight=False, soft_wrap=True, end="")
+        return
+    out.print(str(_render(loaded, models, names)))
 
 
 def _check_platforms(lock: Lock, force: bool) -> None:
@@ -311,14 +368,18 @@ def up(
     loaded = _load(lock)
     models = load_manifest(manifest)
     _check_platforms(loaded, force)
-    names = _secret_names(bundle)
-    require(names, "The bundles' runs")
-    if not names:
+    entries = _with_bundles(bundle)
+    names = secret_names(entries)
+    require(names, f"The bundles the stack serves ({sorted(entries)})")
+    if names:
+        err.print(f"[muted]Yield gets {names}, for {sorted(entries)}.[/muted]")
+    else:
         err.print(
-            "[muted]No --bundle: Yield gets no secret, and a run naming a secret_ref is "
-            "refused at its gate.[/muted]"
+            "[warn]No bundle served: Yield gets no secret, and every run is refused at its "
+            "gate, which requires the connector's secret. Pass --bundle.[/warn]"
         )
     compose = project(_render(loaded, models, names))
+    _record(entries)
     document = render.read(compose.file)
     runner = compose.runner
     try:
@@ -411,10 +472,33 @@ def status(
         err.print(f"[fail]docker compose failed.[/fail] {error}")
         raise typer.Exit(1) from None
     rows = _rows(states, document)
+    entries = served()
     if as_json:
-        out.print_json(json.dumps({"file": str(compose.file), "services": rows}))
+        out.print_json(
+            json.dumps({"file": str(compose.file), "bundles": entries, "services": rows})
+        )
         return
     out.print(_status_table(rows))
+    table = Table(title="Bundles served", title_justify="left")
+    for column in ("client", "secrets Yield gets", "directory"):
+        table.add_column(column)
+    for client, entry in sorted(entries.items()):
+        table.add_row(f"[name]{client}[/name]", ", ".join(entry["secrets"]), entry["directory"])
+    out.print(table)
+
+
+@app.command(name="forget-bundle")
+def forget_bundle(client: str) -> None:
+    """Stop serving a client's bundle: its secrets leave Yield on the next `up`."""
+    entries = served()
+    if client not in entries:
+        err.print(
+            f"[fail]No bundle {client!r} is served; the stack serves {sorted(entries)}.[/fail]"
+        )
+        raise typer.Exit(2)
+    del entries[client]
+    _record(entries)
+    err.print(f"[ok]Forgot {client}.[/ok] Run `proof stack up` to take its secrets out of Yield.")
 
 
 @app.command()
