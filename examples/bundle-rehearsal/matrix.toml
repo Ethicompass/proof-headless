@@ -3,12 +3,13 @@
 # `kb_subjects`. No mapping or prior: Yield's seeded `default` mapping resolves the dimensions.
 
 [defaults.connector]
-kind = "openai_chat"
-# The appliance's chat model, by its container name on the models network. `openai_chat` takes the
-# full completions URL, and the served model name in `options.model`.
-endpoint = "http://chat:8000/v1/chat/completions"
+# The `profile` kind, the one a real engagement uses: the profile carries the path, the model name,
+# the system prompt and the reasoning switch; the endpoint is the chat model's base URL, by its
+# container name on the models network.
+kind = "profile"
+profile = "acme-assistant"
+endpoint = "http://chat:8000"
 secret_ref = "REHEARSAL_TARGET_KEY"
-options = { model = "nemotron-3.5-lightning" }
 safe_mode = true
 min_interval_seconds = 0.5
 max_retries = 2

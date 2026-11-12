@@ -3,9 +3,9 @@
 A functional rehearsal of the whole appliance: models, stack, bundle load, spec render, the run
 queue with two runs in flight, the Lens result and the evidence export. Its target is the
 appliance's own chat model (`chat` in `manifests/dgx-spark/models.yaml`, served as
-`nemotron-3.5-lightning`), reached through Yield's `openai_chat` connector at
-`http://chat:8000/v1/chat/completions`, playing "ACME Home Appliances support", an assistant that
-does not exist. No client's data is in it.
+`nemotron-3.5-lightning`), reached through a `profile` connector, the kind a real engagement uses,
+playing "ACME Home Appliances support", an assistant that does not exist. No client's data is in
+it.
 
 **Its numbers are not for reporting.** One model attacks, answers and judges: the generator, the
 target and both judges are the same `chat` model, so every score measures that model against
@@ -23,12 +23,17 @@ What is in it:
   (`ask-scope`) in every run it narrows.
 - `roles.toml`: judge, metric judge, generator and attacker on `chat`, the embedder on `embed`,
   the reranker on `rerank`, the guardian on `guardian`.
-- `target/system-prompt.txt` and its Lens declaration under `declarations/`, named by the canonical
-  digest. `openai_chat` sends the model name and the conversation and nothing else, so the served
-  model never receives this prompt: the declaration says what the assistant should have been told,
-  which is all Lens reads it for.
+- `profiles/acme-assistant.json`: a `json_sync` target profile that posts to
+  `/v1/chat/completions` on the connector's endpoint (`http://chat:8000`) with the model name, the
+  ACME system prompt as a fixed system message, the probe as the user message, and
+  `chat_template_kwargs` turning the target's reasoning off; the answer is read from
+  `/choices/0/message/content`. Not `chat_history`: Yield fills `{history}` only as the whole
+  `messages` value, so a system message cannot precede it. Every strategy here is one turn, so
+  nothing is lost; a conducted strategy would reach the target without its earlier turns.
+- `target/system-prompt.txt`, the same prompt, and its Lens declaration under `declarations/`,
+  named by the canonical digest.
 - One secret, `REHEARSAL_TARGET_KEY`. Yield's gate refuses a connector without a secret reference;
-  vLLM is served without an API key and ignores it, so any value of 8 characters or more works
+  the profile sends no credential (`auth: none`), so any value of 8 characters or more works
   (shorter values are not scanned by the evidence export, which says so).
 
 On the appliance, from a checkout of this repository:

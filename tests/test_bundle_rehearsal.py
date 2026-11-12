@@ -1,5 +1,5 @@
 """The rehearsal bundle: it validates, its declaration is its system prompt, and it renders two
-brainless runs whose target is the manifest's own chat model behind `openai_chat`."""
+brainless runs whose target is the manifest's own chat model behind a `profile` connector."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def bundle_dir(tmp_path: Path) -> Path:
 
 def _receipt(bundle_dir: Path) -> None:
     bundle = load(bundle_dir)
-    loaded = [Loaded("catalogue", "rehearsal", 1)]
+    loaded = [Loaded("catalogue", "rehearsal", 1), Loaded("profile", "acme-assistant", 1)]
     loaded += [
         Loaded("declaration", d.path.name, digest=f"sha256:{d.path.name}")
         for d in bundle.declarations
@@ -62,12 +62,26 @@ def test_the_rehearsal_bundle_is_valid(bundle_dir: Path) -> None:
     assert result.exit_code == 0, result.output
 
 
-def test_the_declaration_is_the_target_s_system_prompt(bundle_dir: Path) -> None:
+def test_the_profile_and_the_declaration_carry_the_target_s_system_prompt(
+    bundle_dir: Path,
+) -> None:
+    prompt = (bundle_dir / "target" / "system-prompt.txt").read_text().strip()
     [declaration] = load(bundle_dir).declarations
     payload = json.loads(declaration.path.read_text())
     assert declaration.path.name == canonical_digest(payload)
-    prompt = (bundle_dir / "target" / "system-prompt.txt").read_text().strip()
     assert payload["sections"] == [{"field": "system_prompt", "text": prompt}]
+    profile = json.loads((bundle_dir / "profiles/acme-assistant.json").read_text())
+    body = profile["request"]["body"]
+    assert body["model"] == load_manifest(SPARK_MANIFEST).named("chat").served_name
+    assert body["messages"] == [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": "{query}"},
+    ]
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert profile["answer"] == {
+        "protocol": "json_sync",
+        "content": ["/choices/0/message/content"],
+    }
 
 
 def test_every_strategy_stands_without_a_brain(bundle_dir: Path) -> None:
@@ -83,9 +97,10 @@ def test_two_small_runs_attack_the_appliance_s_chat_model(bundle_dir: Path) -> N
     chat = load_manifest(SPARK_MANIFEST).named("chat")
     for spec in specs.values():
         connector = spec["connector"]
-        assert connector["kind"] == "openai_chat"
-        assert connector["endpoint"] == f"http://{chat.name}:8000/v1/chat/completions"
-        assert connector["options"] == {"model": chat.served_name}
+        assert connector["kind"] == "profile"
+        assert connector["endpoint"] == f"http://{chat.name}:8000"
+        assert connector["profile"] == {"name": "acme-assistant", "version": 1}
+        assert "options" not in connector
         assert "kb_ref" not in spec and spec["kb_subjects"] == []
         assert spec["attackers"] == {}
         assert spec["budget"]["max_target_calls"] <= 20

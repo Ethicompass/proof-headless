@@ -1,10 +1,11 @@
-# A functional rehearsal: the target is the appliance's own chat model, reached through Yield's
-# `openai_chat` connector, playing a fictitious support assistant. It proves the pipeline runs end
-# to end; its numbers are not for reporting (see README.md). Paths are relative to this file.
+# A functional rehearsal: the target is the appliance's own chat model, reached through a target
+# profile that gives it a fictitious support assistant's system prompt. It proves the pipeline
+# runs end to end; its numbers are not for reporting (see README.md). Paths are relative to this
+# file.
 client = "rehearsal"
 language = "en-US"
-# Yield's gate refuses a connector without a secret reference, and vLLM serves the chat model
-# without an API key, so this one carries any non-empty placeholder value.
+# Yield's gate refuses a connector without a secret reference. The profile sends no credential
+# (`auth = "none"`) and vLLM serves without an API key, so this carries any placeholder value.
 secrets = ["REHEARSAL_TARGET_KEY"]
 matrix = "matrix.toml"
 
@@ -18,6 +19,12 @@ tone = "a customer writing in the first person"
 [[catalogues]]
 name = "rehearsal"
 path = "catalogues/rehearsal"
+
+# How the target is reached: the chat model's completions API, with the system prompt in every
+# request.
+[[profiles]]
+name = "acme-assistant"
+path = "profiles/acme-assistant.json"
 
 # The target's system prompt (target/system-prompt.txt), declared for Lens.
 [[declarations]]
