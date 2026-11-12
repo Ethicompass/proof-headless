@@ -198,13 +198,31 @@ def test_a_run_with_no_metric_ids_is_refused(bundle_dir: Path) -> None:
     assert "metric_ids" in _said(result)
 
 
-def test_every_metric_has_a_judge_with_reasoning_off(bundle_dir: Path) -> None:
+def test_only_a_metric_that_uses_a_chat_role_gets_a_judge_with_reasoning_off(
+    bundle_dir: Path,
+) -> None:
+    """Yield's measure loop probes any declared judge, so a judge on bias or toxicity would fail
+    them on a probe they never needed."""
     _receipt(bundle_dir)
-    for spec in _specs(bundle_dir).values():
-        assert set(spec["metrics"]) == set(spec["metric_ids"])
-        for config in spec["metrics"].values():
-            switch = config["judge"]["extra_body"]["chat_template_kwargs"]
-            assert switch == {"enable_thinking": False}
+    specs = _specs(bundle_dir)
+    r1, r2 = specs["r1-disclosure"]["metrics"], specs["r2-returns"]["metrics"]
+    for config in (r1["ai_disclosure"], r1["context"], r2["context"]):
+        assert config["judge"]["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert set(r1["bias"]) == {"guardian", "params"}
+    assert set(r2["toxicity"]) == {"embedder", "params"}
+
+
+@pytest.mark.parametrize("role", ["judge", "generator"])
+def test_a_metric_judged_by_a_role_with_reasoning_not_off_is_refused(
+    bundle_dir: Path, role: str
+) -> None:
+    matrix = bundle_dir / "matrix.toml"
+    text = matrix.read_text()
+    matrix.write_text(text.replace('uses = ["metric_judge"]', f'uses = ["{role}"]', 1))
+    _receipt(bundle_dir)
+    result = _render(bundle_dir)
+    assert result.exit_code == 2
+    assert f"metric ai_disclosure uses {role}, whose reasoning is not off" in _said(result)
 
 
 def test_a_render_removes_the_specs_of_runs_dropped_from_the_matrix(bundle_dir: Path) -> None:

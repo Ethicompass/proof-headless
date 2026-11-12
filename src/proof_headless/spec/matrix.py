@@ -122,7 +122,8 @@ class MetricEntry(BaseModel):
     uses: tuple[str, ...] = ()
     """Role names; each fills the metric's slot for its kind (a chat role its judge). Declared
     rather than left to Yield's fallback, because the fallback for a judge is the run's principle
-    judge, with its reasoning on. With no chat role here, the `metric_judge` role judges."""
+    judge, with its reasoning on. A chat role here must switch reasoning off, and with none
+    the metric gets no judge."""
     params: dict[str, Any] = Field(default_factory=dict)
 
 

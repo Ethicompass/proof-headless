@@ -35,7 +35,7 @@ from proof_headless.models.render import CONTAINER_PORT
 from proof_headless.spec.matrix import Kind, Matrix, Roles, Run
 
 METRIC_JUDGE = "metric_judge"
-"""The role that judges for a metric whose roles name no chat model."""
+"""The fixed role that judges for a metric, reasoning off unless the roles file says otherwise."""
 
 PROVIDER = "openai_compatible"
 """Yield's provider for a chat model served by anything that speaks the OpenAI API (yield#143)."""
@@ -347,12 +347,13 @@ class Renderer:
         return context
 
     def _metrics(self, run: Run, why: str) -> dict[str, Any]:
-        """Every metric the run lists, each with a judge of its own.
+        """Every metric the run lists, with exactly the models its `uses` names.
 
-        A metric whose roles name no chat model still gets the metric judge: Yield builds only the
-        roles a metric needs, so a judge on one that needs none is never asked, while a metric
-        that needs one and declares none falls back to the run's principle judge, reasoning on.
-        Which metrics need a judge is Yield's registry's to say, so the judge goes on all of them.
+        A metric gets a judge only when its roles name a chat role, and that role must switch its
+        reasoning off: metric judges ask for structured output, and the principle judge's
+        reasoning would leave the call uncapped. No judge goes on a metric that uses none, because
+        Yield's measure loop probes a declared judge whether the metric needs it or not, and a
+        failed probe would fail a metric that never asks it anything.
         """
         metrics: dict[str, Any] = {}
         for metric_id in run.metric_ids:
@@ -365,11 +366,15 @@ class Renderer:
             config: dict[str, Any] = {}
             for role in entry.uses:
                 slot = SLOT[self.roles.kind_of(role)]
+                if slot == "judge" and self.roles.reasoning_of(role) is not False:
+                    raise Refused(
+                        f"{why}: metric {metric_id} uses {role}, whose reasoning is not off; a "
+                        f"metric judges with a role that sets `reasoning = false`, such as "
+                        f"{METRIC_JUDGE}"
+                    )
                 if slot in config:
                     raise Refused(f"metric {metric_id}: two of its roles fill its {slot}")
                 config[slot] = self.model(role, f"{why}, metric {metric_id}")
-            if "judge" not in config:
-                config["judge"] = self.model(METRIC_JUDGE, f"{why}, metric {metric_id}")
             if entry.params:
                 config["params"] = entry.params
             metrics[metric_id] = config
