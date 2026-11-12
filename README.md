@@ -28,7 +28,7 @@ uv run proof --help
 | `proof spec render` | Renders Yield run specs from a bundle's run matrix and role bindings | available |
 | `proof run` | Queues, watches and re-measures a matrix of runs | planned (#7) |
 | `proof lens` | Makes sure every Yield run has its Lens result | planned (#8) |
-| `proof evidence` | Exports a checksummed evidence package | planned (#9) |
+| `proof evidence` | Exports a checksummed evidence package | available |
 
 ## Serve the models
 
@@ -52,6 +52,22 @@ report under `$PROOF_HOME/evidence/`.
 
 Each model is reachable from other containers as `http://<name>:8000/v1` on the
 `proof-models` network, and from the host on `127.0.0.1:<port>` only.
+
+## Export the evidence
+
+```sh
+proof evidence export acme              # to $PROOF_HOME/exports/acme-<time>
+proof evidence verify <package-dir>     # or: cd <package-dir> && sha256sum -c SHA256SUMS
+```
+
+The package holds the bundle's receipt and rendered specs, the models manifest and compose file,
+`appliance.lock` when present, every running container's image digests, what each model server
+reports at `/version`, the doctor's reports, and per run Yield's status and manifest, the run's
+objects in Yield's store (traces, dataset) and the Lens result. Its README lists the layout and
+every gap. The store is read over its S3 API with `YIELD_S3_ACCESS_KEY` and `YIELD_S3_SECRET_KEY`
+from the secrets file; without them the traces are a recorded gap. The export is refused, and
+nothing is written, when any value of the secrets file appears in any file; the refusal names the
+file and the secret, never the value.
 
 Read commands take `--json`. Results go to standard output, and messages for the operator go to
 standard error.
