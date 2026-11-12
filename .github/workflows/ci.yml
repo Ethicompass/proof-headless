@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Types
+        run: uv run mypy
+      - name: Tests
+        # Everything but the appliance tier: no GPU, no served models, no docker daemon.
+        run: uv run pytest -q -m "not appliance" --cov --cov-report=term-missing:skip-covered
