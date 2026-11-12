@@ -1,0 +1,208 @@
+name: proof-models
+services:
+  chat:
+    image: vllm/vllm-openai:v0.32.0
+    entrypoint:
+    - vllm
+    - serve
+    command:
+    - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+    - --served-model-name
+    - nemotron-3.5-lightning
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    - --gpu-memory-utilization
+    - '0.4'
+    - --mamba-backend=flashinfer
+    - --mamba-cache-mode=align
+    - --enable-prefix-caching
+    - --max-num-batched-tokens=16384
+    - --kv-cache-dtype=fp8
+    - --moe-backend=marlin
+    - --load-format=fastsafetensors
+    - --tensor-parallel-size=1
+    - --mamba-ssm-cache-dtype=float16
+    - --enable-mamba-cache-stochastic-rounding
+    - --mamba-cache-philox-rounds=5
+    - --reasoning-parser=nemotron_v3
+    - --enable-auto-tool-choice
+    - --tool-call-parser=qwen3_coder
+    - --max-logprobs=20
+    ports:
+    - 127.0.0.1:8001:8000
+    ipc: host
+    environment:
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+    - /home/operator/.cache/huggingface:/root/.cache/huggingface
+    networks:
+    - proof-models
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            count: all
+            capabilities:
+            - gpu
+    healthcheck:
+      test:
+      - CMD
+      - python3
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',
+        timeout=5)
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 1200s
+  guardian:
+    image: vllm/vllm-openai:v0.32.0
+    entrypoint:
+    - vllm
+    - serve
+    command:
+    - meta-llama/Llama-Guard-4-12B
+    - --served-model-name
+    - llama-guard-4-12b
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    - --gpu-memory-utilization
+    - '0.15'
+    - --max-model-len=8192
+    - --quantization=fp8
+    ports:
+    - 127.0.0.1:8002:8000
+    ipc: host
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+    - /home/operator/.cache/huggingface:/root/.cache/huggingface
+    networks:
+    - proof-models
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            count: all
+            capabilities:
+            - gpu
+    healthcheck:
+      test:
+      - CMD
+      - python3
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',
+        timeout=5)
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 1200s
+  rerank:
+    image: vllm/vllm-openai:v0.32.0
+    entrypoint:
+    - vllm
+    - serve
+    command:
+    - nvidia/Nemotron-3.5-Rerank-8B-BF16
+    - --served-model-name
+    - nemotron-3.5-rerank-8b
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    - --gpu-memory-utilization
+    - '0.16'
+    - --runner=pooling
+    - --dtype=bfloat16
+    - --max-model-len=8192
+    - --max-num-seqs=4
+    - --pooler-config={"seq_pooling_type":"MEAN","use_activation":false}
+    - --chat-template-content-format=openai
+    ports:
+    - 127.0.0.1:8003:8000
+    ipc: host
+    environment:
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+    - /home/operator/.cache/huggingface:/root/.cache/huggingface
+    networks:
+    - proof-models
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            count: all
+            capabilities:
+            - gpu
+    healthcheck:
+      test:
+      - CMD
+      - python3
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',
+        timeout=5)
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 1200s
+  embed:
+    image: vllm/vllm-openai:v0.32.0
+    entrypoint:
+    - vllm
+    - serve
+    command:
+    - nvidia/Nemotron-3.5-Embed-1B-BF16
+    - --served-model-name
+    - nemotron-3.5-embed-1b
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    - --gpu-memory-utilization
+    - '0.05'
+    - --dtype=bfloat16
+    - --max-model-len=8192
+    - --chat-template-content-format=openai
+    ports:
+    - 127.0.0.1:8004:8000
+    ipc: host
+    environment:
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+    - /home/operator/.cache/huggingface:/root/.cache/huggingface
+    networks:
+    - proof-models
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            count: all
+            capabilities:
+            - gpu
+    healthcheck:
+      test:
+      - CMD
+      - python3
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',
+        timeout=5)
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 1200s
+networks:
+  proof-models:
+    name: proof-models

@@ -21,7 +21,7 @@ uv run proof --help
 | Command | What it does | Status |
 |---|---|---|
 | `proof version` | Versions of proof and the host | available |
-| `proof models` | Serves the models in a manifest with vLLM, within a memory budget | planned (#2) |
+| `proof models` | Serves the models in a manifest with vLLM, within a memory budget | available |
 | `proof doctor` | Probes every model and service a run depends on | planned (#3) |
 | `proof stack` | Brings up Yield, Lens and the brain registry from pinned images | planned (#4) |
 | `proof bundle` | Validates and loads a client bundle | planned (#5) |
@@ -29,6 +29,24 @@ uv run proof --help
 | `proof run` | Queues, watches and re-measures a matrix of runs | planned (#7) |
 | `proof lens` | Makes sure every Yield run has its Lens result | planned (#8) |
 | `proof evidence` | Exports a checksummed evidence package | planned (#9) |
+
+## Serve the models
+
+The models a host serves are declared in a manifest (`manifests/dgx-spark/models.yaml` is the one
+for a DGX Spark). Copy it to `$PROOF_HOME/models.yaml` (default `~/.proof/models.yaml`) or pass
+`--manifest`. Gated weights need `HF_TOKEN` in the secrets file
+(`~/.config/proof/secrets.env`, mode 600).
+
+```sh
+proof models validate      # check the manifest and its memory arithmetic
+proof models up            # start each model after the previous is healthy
+proof models status        # container state and health per model
+proof models logs chat     # the last lines of one model's log
+proof models down          # stop them; downloaded weights stay cached
+```
+
+Each model is reachable from other containers as `http://<name>:8000/v1` on the
+`proof-models` network, and from the host on `127.0.0.1:<port>` only.
 
 Read commands take `--json`. Results go to standard output, and messages for the operator go to
 standard error.
