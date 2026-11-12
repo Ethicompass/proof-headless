@@ -123,6 +123,18 @@
           "self_hosted": true,
           "requests_per_second": 1.0
         },
+        "judge": {
+          "model": "nemotron-3.5-lightning",
+          "provider": "openai_compatible",
+          "endpoint": "http://chat:8000/v1",
+          "self_hosted": true,
+          "requests_per_second": 2.0,
+          "extra_body": {
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        },
         "params": {
           "model_family": "llamaguard"
         }
@@ -254,6 +266,18 @@
           "endpoint": "http://embed:8000/v1/embeddings",
           "self_hosted": true,
           "requests_per_second": 4.0
+        },
+        "judge": {
+          "model": "nemotron-3.5-lightning",
+          "provider": "openai_compatible",
+          "endpoint": "http://chat:8000/v1",
+          "self_hosted": true,
+          "requests_per_second": 2.0,
+          "extra_body": {
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
         },
         "params": {
           "group_toxicity_threshold": 0.1,

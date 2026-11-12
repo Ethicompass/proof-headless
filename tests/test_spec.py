@@ -165,17 +165,60 @@ def test_a_model_without_pacing_is_refused(bundle_dir: Path) -> None:
     assert "model embed has no pacing" in _said(result)
 
 
-def test_reasoning_off_on_a_model_with_no_switch_is_refused(
-    bundle_dir: Path, tmp_path: Path
+@pytest.mark.parametrize("judge_reasoning", ["on", "off"])
+def test_reasoning_either_way_on_a_model_with_no_switch_is_refused(
+    bundle_dir: Path, tmp_path: Path, judge_reasoning: str
 ) -> None:
+    """Refused both ways: a principle judge whose reasoning was meant on and silently left to the
+    template is as much a different instrument as a metric judge left reasoning."""
     manifest = tmp_path / "models.yaml"
     manifest.write_text(SPARK_MANIFEST.read_text().replace("reasoning_switch: enable_thinking", ""))
+    if judge_reasoning == "off":
+        roles = bundle_dir / "roles.toml"
+        roles.write_text(
+            roles.read_text().replace("reasoning_budget = 4096", "reasoning = false", 1)
+        )
     _receipt(bundle_dir)
     result = runner.invoke(
         app, ["spec", "render", str(bundle_dir), "--manifest", str(manifest), "--json"]
     )
     assert result.exit_code == 2
-    assert "needs reasoning off" in _said(result)
+    assert f"role judge needs reasoning {judge_reasoning}" in _said(result)
+
+
+def test_a_run_with_no_metric_ids_is_refused(bundle_dir: Path) -> None:
+    """Left empty, Yield would resolve the ids through the mapping, and a judged metric with no
+    table would be graded by the principle judge, reasoning on."""
+    matrix = bundle_dir / "matrix.toml"
+    text = matrix.read_text()
+    matrix.write_text(text.replace('metric_ids = ["context", "toxicity"]\n', ""))
+    _receipt(bundle_dir)
+    result = _render(bundle_dir)
+    assert result.exit_code == 2
+    assert "metric_ids" in _said(result)
+
+
+def test_every_metric_has_a_judge_with_reasoning_off(bundle_dir: Path) -> None:
+    _receipt(bundle_dir)
+    for spec in _specs(bundle_dir).values():
+        assert set(spec["metrics"]) == set(spec["metric_ids"])
+        for config in spec["metrics"].values():
+            switch = config["judge"]["extra_body"]["chat_template_kwargs"]
+            assert switch == {"enable_thinking": False}
+
+
+def test_a_render_removes_the_specs_of_runs_dropped_from_the_matrix(bundle_dir: Path) -> None:
+    _receipt(bundle_dir)
+    directory = receipt_path(load(bundle_dir)).parent / "specs"
+    directory.mkdir(parents=True)
+    (directory / "r0-dropped.json").write_text(json.dumps({"run_id": "r0-dropped"}))
+    (directory / "notes.json").write_text(json.dumps({"kept": True}))
+    assert _render(bundle_dir).exit_code == 0
+    assert sorted(p.name for p in directory.iterdir()) == [
+        "notes.json",
+        "r1-disclosure.json",
+        "r2-returns.json",
+    ]
 
 
 def test_an_unknown_catalogue_is_refused(bundle_dir: Path) -> None:

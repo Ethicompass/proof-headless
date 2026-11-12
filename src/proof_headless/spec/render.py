@@ -28,11 +28,14 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from proof_headless.bundle import loader
-from proof_headless.bundle.loader import Loaded
+from proof_headless.bundle.loader import Loaded, Piece
 from proof_headless.bundle.manifest import Bundle
 from proof_headless.models.manifest import Manifest, ModelEntry, Role
 from proof_headless.models.render import CONTAINER_PORT
 from proof_headless.spec.matrix import Kind, Matrix, Roles, Run
+
+METRIC_JUDGE = "metric_judge"
+"""The role that judges for a metric whose roles name no chat model."""
 
 PROVIDER = "openai_compatible"
 """Yield's provider for a chat model served by anything that speaks the OpenAI API (yield#143)."""
@@ -121,13 +124,13 @@ class Receipt:
             )
         return cls({(item.kind, item.name): item for item in receipt.loaded})
 
-    def version(self, kind: str, name: str, why: str) -> int:
+    def version(self, kind: Piece, name: str, why: str) -> int:
         item = self.pieces.get((kind, name))
         if item is None or item.version is None:
             raise Refused(f"{why}: {kind} {name} is not in the receipt; load the bundle again")
         return item.version
 
-    def digest(self, kind: str, name: str, why: str) -> str:
+    def digest(self, kind: Piece, name: str, why: str) -> str:
         item = self.pieces.get((kind, name))
         if item is None or not item.digest:
             raise Refused(f"{why}: {kind} {name} has no digest in the receipt; load it again")
@@ -190,11 +193,12 @@ class Renderer:
         reasoning = self.roles.reasoning_of(role)
         if reasoning is not None:
             if entry.reasoning_switch is None:
-                if not reasoning:
-                    raise Refused(
-                        f"role {role} needs reasoning off, and {entry.name} declares no "
-                        f"reasoning_switch in the manifest to turn it off with"
-                    )
+                state = "on" if reasoning else "off"
+                raise Refused(
+                    f"role {role} needs reasoning {state}, and {entry.name} declares no "
+                    f"reasoning_switch in the manifest to switch it with; set the switch, or "
+                    f"`reasoning` on the role to leave it to the chat template"
+                )
             else:
                 spec["extra_body"] = {
                     "chat_template_kwargs": {entry.reasoning_switch: reasoning},
@@ -232,15 +236,15 @@ class Renderer:
         catalogue = next(entry for entry in self.bundle.catalogues if entry.name == run.catalogue)
         spec["catalogues"] = [run.catalogue]
         spec["catalogue_versions"] = {
-            run.catalogue: self.receipt.version("catalogue", run.catalogue, why)
+            run.catalogue: self.receipt.version(Piece.CATALOGUE, run.catalogue, why)
         }
         spec["plugins"] = list(run.plugins)
         spec["strategies"] = list(run.strategies)
         spec["dimensions"] = list(run.dimensions)
         mapping = self._setting(run, "metric_mapping")
         if mapping is not None:
-            self._in_bundle("mapping", mapping, why)
-            self.receipt.version("mapping", mapping, why)
+            self._in_bundle(Piece.MAPPING, mapping, why)
+            self.receipt.version(Piece.MAPPING, mapping, why)
             spec["metric_mapping"] = mapping
         spec["metric_ids"] = list(run.metric_ids)
         spec["contract_name"] = catalogue.contract
@@ -261,8 +265,8 @@ class Renderer:
         spec["metrics"] = self._metrics(run, why)
         prior = self._setting(run, "realism_prior")
         if prior is not None:
-            self._in_bundle("prior", prior, why)
-            self.receipt.version("prior", prior, why)
+            self._in_bundle(Piece.PRIOR, prior, why)
+            self.receipt.version(Piece.PRIOR, prior, why)
             spec["realism_prior"] = prior
         spec["replicas"] = run.replicas
         spec["budget"] = self._budget(run, why)
@@ -274,11 +278,11 @@ class Renderer:
             spec["target_declaration"] = declaration
         return Rendered(run, spec, spec["judge"]["model"])
 
-    def _in_bundle(self, kind: str, name: str, why: str) -> None:
+    def _in_bundle(self, kind: Piece, name: str, why: str) -> None:
         entries = {
-            "profile": self.bundle.profiles,
-            "prior": self.bundle.priors,
-            "mapping": self.bundle.mappings,
+            Piece.PROFILE: self.bundle.profiles,
+            Piece.PRIOR: self.bundle.priors,
+            Piece.MAPPING: self.bundle.mappings,
         }[kind]
         names = sorted(entry.name for entry in entries)
         if name not in names:
@@ -299,7 +303,7 @@ class Renderer:
         return {
             "registry": kb.registry,
             "repository": brain.repository,
-            "digest": self.receipt.digest("brain", brain.name, why),
+            "digest": self.receipt.digest(Piece.BRAIN, brain.name, why),
         }
 
     def _connector(self, run: Run, why: str) -> dict[str, Any]:
@@ -318,10 +322,10 @@ class Renderer:
             "secret_ref": connector.secret_ref,
         }
         if connector.profile is not None:
-            self._in_bundle("profile", connector.profile, why)
+            self._in_bundle(Piece.PROFILE, connector.profile, why)
             block["profile"] = {
                 "name": connector.profile,
-                "version": self.receipt.version("profile", connector.profile, why),
+                "version": self.receipt.version(Piece.PROFILE, connector.profile, why),
             }
         block["declared_capabilities"] = list(connector.declared_capabilities)
         block["safe_mode"] = connector.safe_mode
@@ -343,6 +347,13 @@ class Renderer:
         return context
 
     def _metrics(self, run: Run, why: str) -> dict[str, Any]:
+        """Every metric the run lists, each with a judge of its own.
+
+        A metric whose roles name no chat model still gets the metric judge: Yield builds only the
+        roles a metric needs, so a judge on one that needs none is never asked, while a metric
+        that needs one and declares none falls back to the run's principle judge, reasoning on.
+        Which metrics need a judge is Yield's registry's to say, so the judge goes on all of them.
+        """
         metrics: dict[str, Any] = {}
         for metric_id in run.metric_ids:
             entry = self.matrix.metrics.get(metric_id)
@@ -357,10 +368,11 @@ class Renderer:
                 if slot in config:
                     raise Refused(f"metric {metric_id}: two of its roles fill its {slot}")
                 config[slot] = self.model(role, f"{why}, metric {metric_id}")
+            if "judge" not in config:
+                config["judge"] = self.model(METRIC_JUDGE, f"{why}, metric {metric_id}")
             if entry.params:
                 config["params"] = entry.params
-            if config:
-                metrics[metric_id] = config
+            metrics[metric_id] = config
         return metrics
 
     def _budget(self, run: Run, why: str) -> dict[str, int]:
@@ -382,12 +394,30 @@ class Renderer:
         names = [declaration.path.name for declaration in self.bundle.declarations]
         if name not in names:
             raise Refused(f"{why}: unknown declaration {name!r}; the bundle has {names}")
-        return self.receipt.digest("declaration", name, why)
+        return self.receipt.digest(Piece.DECLARATION, name, why)
+
+
+def _rendered_before(path: Path) -> bool:
+    """Whether `path` is a spec a render wrote: JSON whose `run_id` is its file name."""
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(document, dict) and document.get("run_id") == path.stem
 
 
 def write(rendered: list[Rendered], directory: Path) -> list[Path]:
-    """One `<run id>.json` per spec under `directory`, which is created."""
+    """One `<run id>.json` per spec under `directory`, which is created.
+
+    Specs an earlier render wrote are removed first: one for a run since dropped from the matrix
+    is pinned to an older receipt, and whatever submits the directory would send it. Only files
+    that read as a spec named by their own run id are removed, so `--out` pointed at a directory
+    holding anything else leaves that alone.
+    """
     directory.mkdir(parents=True, exist_ok=True)
+    for stale in directory.glob("*.json"):
+        if _rendered_before(stale):
+            stale.unlink()
     written = []
     for item in rendered:
         path = directory / f"{item.run.id}.json"

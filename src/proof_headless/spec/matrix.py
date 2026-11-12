@@ -122,7 +122,7 @@ class MetricEntry(BaseModel):
     uses: tuple[str, ...] = ()
     """Role names; each fills the metric's slot for its kind (a chat role its judge). Declared
     rather than left to Yield's fallback, because the fallback for a judge is the run's principle
-    judge, with its reasoning on."""
+    judge, with its reasoning on. With no chat role here, the `metric_judge` role judges."""
     params: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -156,7 +156,10 @@ class Run(Overridable):
     replicas: int = Field(ge=1)
     max_calls: int | None = Field(default=None, ge=1)
     """The run's `budget.max_target_calls`."""
-    metric_ids: tuple[str, ...] = ()
+    metric_ids: tuple[str, ...] = Field(min_length=1)
+    """Required, never left to Yield's mapping: the mapping would resolve metrics with no
+    `[metrics.<id>]` table, and a judged one falls back to the run's principle judge, reasoning on.
+    With the ids given, each has a table and so its own judge, reasoning off."""
     dimensions: tuple[str, ...] = Field(min_length=1)
     attackers: dict[str, str] = Field(default_factory=dict)
     """Attacker id, as the catalogue's delivery sidecar names it, to the role that plays it."""
