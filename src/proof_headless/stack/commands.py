@@ -4,10 +4,10 @@
 this host (it would pull and then die with `exec format error`), a models manifest with no chat
 model for Lens, a secrets file others can read, and a secret a bundle declares that the file does
 not define. It generates the stack's own credentials the secrets file lacks before rendering
-(`credentials.ensure`), and refuses a store already started without them. It creates the models'
-network when absent (`docker.ensure_network` says why it is external to both projects), pulls the
-images the APIs launch per job (neither dispatcher pulls), starts the project and waits until every
-service is healthy and every seed exited 0.
+(`credentials.ensure`), as `render --write` does. It creates the models' network when absent
+(`docker.ensure_network` says why it is external to both projects), pulls the images the APIs launch
+per job (neither dispatcher pulls), starts the project and waits until every service is healthy and
+every seed exited 0.
 
 `status`, `logs` and `down` read the compose file the stack was started from and never re-render
 it, and `render` only previews unless told `--write`, so a `pin` or a new manifest after `up`
@@ -252,7 +252,8 @@ def render_command(
     """Print the compose file `up` would start, for the served bundles plus any --bundle.
 
     A preview by default: the file under `$PROOF_HOME/stack` is the one the running stack was
-    started from, and `status`, `logs` and `down` read it, so only `--write` replaces it.
+    started from, and `status`, `logs` and `down` read it, so only `--write` replaces it, after
+    generating the credentials it refers to that the secrets file lacks, as `up` does.
     """
     loaded = _load(lock)
     models = load_manifest(manifest)
@@ -262,6 +263,7 @@ def render_command(
         text = yaml.safe_dump(document, sort_keys=False)
         out.print(text, markup=False, highlight=False, soft_wrap=True, end="")
         return
+    _ensure_credentials()
     out.print(str(_render(loaded, models, names)))
 
 
@@ -360,20 +362,16 @@ def _explain(compose: Compose, document: dict[str, Any]) -> None:
 
 
 def _ensure_credentials() -> None:
-    """Generate the stack's credentials the secrets file lacks, before the file that refers to
-    them is rendered, or refuse when a store was already started without them."""
+    """Generate the stack's credentials the secrets file lacks, before writing the file that
+    refers to them: compose refuses every command on that file, `down` included, while one of
+    them is missing."""
     try:
-        generated = credentials.ensure(paths.secrets_file(), render.PROJECT, docker_runner())
-    except (credentials.StoreInitialised, secrets.SecretsFileExposed) as error:
+        generated = credentials.ensure(paths.secrets_file())
+    except secrets.SecretsFileExposed as error:
         err.print(f"[fail]Refused.[/fail] {error}")
         raise typer.Exit(2) from None
     if generated:
         err.print(f"[muted]Generated {generated} into {paths.secrets_file()}.[/muted]")
-
-
-def docker_runner() -> Runner:
-    """The runner `up` asks docker outside compose with; the same one `project` drives."""
-    return project(stack_file()).runner
 
 
 @app.command()

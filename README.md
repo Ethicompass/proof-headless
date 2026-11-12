@@ -94,25 +94,14 @@ and still pass its secret scan.
 ### A stack started with the old default credentials
 
 Stacks started before the credentials were generated ran their stores with the development
-defaults (`yieldadmin`, `lensadmin`), and a store keeps the credentials it was initialised with in
-its volume. `up` refuses to generate new ones for a store whose volume exists, and says which.
-Either keep the store and its data by setting its credentials to the values it was started with
-(the defaults above, unless you had set your own):
-
-```sh
-proof secrets set YIELD_S3_ACCESS_KEY     # once per name the refusal lists
-```
-
-or recreate the store, which deletes its runs' objects:
-
-```sh
-proof stack down
-docker volume rm proof-stack_yield_minio proof-stack_lens_minio
-proof stack up --bundle <bundle>          # generates fresh credentials
-```
-
-Recreating is the way to stop using a well-known credential. Kept defaults are long enough to be
-scanned, and the export no longer finds them in the compose file.
+defaults (`yieldadmin`, `lensadmin`). Nothing needs to be done for them: the next `up` generates
+the missing credentials, and compose recreates the stores, Yield and Lens with the same new
+values. MinIO reads its root credentials from the environment at every start and keeps none in
+its volume. Measured on the DGX Spark with the stack's own MinIO image
+(`pgsty/minio:RELEASE.2026-08-04T00-00-00Z`): a volume started with one root user and password,
+then restarted with another pair, let the new pair in, refused the old one, and still held the
+bucket written under the old one. To keep chosen values instead, set them with
+`proof secrets set NAME` before `up`.
 
 | From the host | Port | From a job container |
 |---|---|---|

@@ -212,12 +212,29 @@ def test_up_generates_the_stack_s_credentials_once_into_the_secrets_file(
     assert secrets.values(path) == held
 
 
-def test_up_refuses_a_store_started_with_credentials_the_file_lacks(fake: FakeCompose) -> None:
-    fake.volumes.add("proof-stack_lens_minio")
+def test_up_generates_credentials_for_stores_started_with_the_old_defaults(
+    fake: FakeCompose,
+) -> None:
+    """MinIO reads its root credentials at every start, so a store that exists takes new ones."""
+    _secrets("YIELD_S3_ACCESS_KEY='yieldadmin'\nYIELD_S3_SECRET_KEY='yieldadmin'\n")
     result = runner.invoke(app, ["stack", "up", *USE_LOCK])
-    assert result.exit_code == 2
-    assert "docker volume rm proof-stack_lens_minio" in _text(result.output)
-    assert not commands.stack_file().exists()
+    assert result.exit_code == 0, result.output
+    held = secrets.values(paths.secrets_file())
+    assert held["YIELD_S3_ACCESS_KEY"] == "yieldadmin"
+    assert len(held["LENS_S3_ACCESS_KEY"]) == credentials.LENGTH
+
+
+def test_render_write_generates_the_credentials_the_file_it_writes_needs(
+    fake: FakeCompose,
+) -> None:
+    result = runner.invoke(app, ["stack", "render", *USE_LOCK, "--write"])
+    assert result.exit_code == 0, result.output
+    assert set(credentials.NAMES) <= set(secrets.values(paths.secrets_file()))
+
+
+def test_render_preview_writes_no_credential(fake: FakeCompose) -> None:
+    result = runner.invoke(app, ["stack", "render", *USE_LOCK])
+    assert result.exit_code == 0, result.output
     assert not paths.secrets_file().exists()
 
 

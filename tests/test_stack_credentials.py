@@ -5,7 +5,6 @@ from __future__ import annotations
 import stat
 from pathlib import Path
 
-import pytest
 import yaml
 
 from proof_headless import paths, secrets
@@ -14,7 +13,6 @@ from proof_headless.models.manifest import load
 from proof_headless.stack import credentials, render
 from proof_headless.stack import lock as locks
 from tests.conftest import LOCK, SPARK_MANIFEST
-from tests.fakes import FakeCompose
 
 
 def _mode(path: Path) -> int:
@@ -23,7 +21,7 @@ def _mode(path: Path) -> int:
 
 def test_every_absent_credential_is_generated_into_a_private_file() -> None:
     path = paths.secrets_file()
-    generated = credentials.ensure(path, render.PROJECT, FakeCompose())
+    generated = credentials.ensure(path)
     assert generated == list(credentials.NAMES)
     held = secrets.values(path)
     assert set(credentials.NAMES) <= set(held)
@@ -37,34 +35,26 @@ def test_a_credential_the_file_defines_is_never_overwritten() -> None:
     path = paths.secrets_file()
     path.write_text("YIELD_S3_ACCESS_KEY='operator-chosen-key'\nACME_TARGET_KEY='k'\n")
     path.chmod(0o600)
-    generated = credentials.ensure(path, render.PROJECT, FakeCompose())
+    generated = credentials.ensure(path)
     assert "YIELD_S3_ACCESS_KEY" not in generated
     held = secrets.values(path)
     assert held["YIELD_S3_ACCESS_KEY"] == "operator-chosen-key"
     assert held["ACME_TARGET_KEY"] == "k"
     assert _mode(path) == 0o600
     again = dict(held)
-    assert credentials.ensure(path, render.PROJECT, FakeCompose()) == []
+    assert credentials.ensure(path) == []
     assert secrets.values(path) == again
 
 
-def test_a_store_started_without_them_is_refused_and_nothing_is_written() -> None:
-    """A store whose volume exists was initialised with the old development defaults: new
-    credentials would lock Yield or Lens out of it."""
+def test_a_name_defined_empty_is_generated() -> None:
     path = paths.secrets_file()
-    fake = FakeCompose(volumes={"proof-stack_yield_minio"})
-    with pytest.raises(credentials.StoreInitialised, match="docker volume rm proof-stack_yield"):
-        credentials.ensure(path, render.PROJECT, fake)
-    assert not path.exists()
-
-
-def test_a_started_store_whose_credentials_the_file_holds_is_fine() -> None:
-    path = paths.secrets_file()
-    path.write_text("YIELD_S3_ACCESS_KEY='yieldadmin'\nYIELD_S3_SECRET_KEY='yieldadmin'\n")
+    path.write_text("YIELD_S3_SECRET_KEY=\nACME_TARGET_KEY='k'\n")
     path.chmod(0o600)
-    fake = FakeCompose(volumes={"proof-stack_yield_minio"})
-    generated = credentials.ensure(path, render.PROJECT, fake)
-    assert "YIELD_S3_ACCESS_KEY" not in generated and "LENS_S3_ACCESS_KEY" in generated
+    assert "YIELD_S3_SECRET_KEY" in credentials.ensure(path)
+    held = secrets.values(path)
+    assert len(held["YIELD_S3_SECRET_KEY"]) == credentials.LENGTH
+    assert path.read_text().count("YIELD_S3_SECRET_KEY=") == 1
+    assert held["ACME_TARGET_KEY"] == "k"
 
 
 def test_the_rendered_stack_holds_no_credential_value_the_evidence_scan_would_find(
@@ -73,7 +63,7 @@ def test_the_rendered_stack_holds_no_credential_value_the_evidence_scan_would_fi
     """The evidence package carries the stack's compose file; with the credentials generated
     into the secrets file, the scan finds none of them there."""
     path = paths.secrets_file()
-    credentials.ensure(path, render.PROJECT, FakeCompose())
+    credentials.ensure(path)
     directory = tmp_path / "package"
     render.write(locks.load(LOCK), load(SPARK_MANIFEST), directory)
     findings = package.scan(directory, secrets.values(path))
