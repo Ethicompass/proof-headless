@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from proof_headless import paths
@@ -129,3 +130,48 @@ def test_an_invalid_manifest_exits_2(tmp_path: Path) -> None:
     result = runner.invoke(app, ["models", "validate", "--manifest", str(bad)])
     assert result.exit_code == 2
     assert "Invalid manifest" in result.output
+
+
+@pytest.mark.usefixtures("token")
+def test_a_model_in_a_restart_loop_fails_fast_with_its_log(fake: FakeCompose) -> None:
+    fake.crash_loops = frozenset({"chat"})
+    result = runner.invoke(app, ["models", "up", *MANIFEST])
+    assert result.exit_code == 1
+    assert "restarting" in result.output and "CUDA out of memory" in result.output
+    assert fake.started() == ["chat"]
+
+
+@pytest.mark.usefixtures("token")
+def test_starting_one_model_only_needs_memory_for_that_one(
+    fake: FakeCompose, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(memory, "read_host_memory", lambda: memory.HostMemory(128.0, 10.0))
+    result = runner.invoke(app, ["models", "up", *MANIFEST, "--only", "embed"])
+    assert result.exit_code == 0, result.output
+    assert fake.started() == ["embed"]
+
+
+def test_status_and_down_work_without_a_token(fake: FakeCompose) -> None:
+    assert runner.invoke(app, ["models", "status", *MANIFEST]).exit_code == 0
+    assert runner.invoke(app, ["models", "down", *MANIFEST]).exit_code == 0
+
+
+def test_validate_as_json(fake: FakeCompose) -> None:
+    result = runner.invoke(app, ["models", "validate", *MANIFEST, "--json"])
+    assert result.exit_code == 0
+    assert {m["name"] for m in json.loads(result.stdout)["models"]} == {
+        "chat",
+        "guardian",
+        "rerank",
+        "embed",
+    }
+
+
+def test_a_manifest_over_budget_shows_the_shares_as_a_table(tmp_path: Path) -> None:
+    data = yaml.safe_load(SPARK_MANIFEST.read_text())
+    data["memory_budget"] = 0.5
+    path = tmp_path / "over.yaml"
+    path.write_text(yaml.safe_dump(data))
+    result = runner.invoke(app, ["models", "validate", "--manifest", str(path)])
+    assert result.exit_code == 2
+    assert "Memory shares" in result.output and "0.76" in result.output

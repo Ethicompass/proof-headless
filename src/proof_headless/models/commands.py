@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import typer
+import yaml
 from rich.table import Table
 
 from proof_headless import paths, secrets
@@ -27,6 +28,10 @@ from proof_headless.models.manifest import Manifest, ManifestInvalid, ModelEntry
 app = typer.Typer(help="Serve the models in a manifest with vLLM.", no_args_is_help=True)
 
 POLL_SECONDS = 10.0
+STOPPED = frozenset({"exited", "dead", "restarting"})
+"""States that mean a starting model failed. `restarting` is the one `restart: unless-stopped`
+turns a crash into: the container never reads as exited, so without it a model that dies at start
+would be waited on until the deadline, and its log never shown."""
 GRACE_SECONDS = 600
 """How long past a model's `start_period_seconds` `up` waits for it before giving up."""
 
@@ -35,11 +40,35 @@ ManifestOption = typer.Option(
 )
 
 
-def _load(path: Path | None) -> Manifest:
+def _shares_table(path: Path) -> Table | None:
+    """The declared shares as a table, read from the raw file, for a manifest the budget refused."""
     try:
-        return manifests.load(path or paths.default_manifest())
+        raw = yaml.safe_load(path.read_text())
+        models = raw["models"]
+        budget = float(raw.get("memory_budget", Manifest.model_fields["memory_budget"].default))
+        rows = [(str(m["name"]), float(m["gpu_memory_utilization"])) for m in models]
+    except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError):
+        return None
+    table = Table(title="Memory shares", title_justify="left")
+    table.add_column("model")
+    table.add_column("share", justify="right")
+    for name, share in rows:
+        table.add_row(name, f"{share:.2f}")
+    table.add_row("[b]total[/b]", f"[fail]{sum(s for _, s in rows):.2f}[/fail]")
+    table.add_row("budget", f"{budget:.2f}")
+    return table
+
+
+def _load(path: Path | None) -> Manifest:
+    target = path or paths.default_manifest()
+    try:
+        return manifests.load(target)
     except ManifestInvalid as error:
         err.print(f"[fail]Invalid manifest.[/fail] {error}")
+        if "budget" in str(error):
+            table = _shares_table(target)
+            if table is not None:
+                err.print(table)
         raise typer.Exit(2) from None
 
 
@@ -50,9 +79,15 @@ def compose_for(manifest: Manifest) -> Compose:
 
 
 @app.command()
-def validate(manifest: Path | None = ManifestOption) -> None:
+def validate(
+    manifest: Path | None = ManifestOption,
+    as_json: bool = typer.Option(False, "--json", help="Print the manifest as JSON."),
+) -> None:
     """Check the manifest and show what it declares."""
     loaded = _load(manifest)
+    if as_json:
+        out.print_json(loaded.model_dump_json())
+        return
     table = Table(title="Models", title_justify="left")
     for column in ("name", "served as", "roles", "api", "port", "memory share"):
         table.add_column(column)
@@ -97,14 +132,18 @@ def _check_secrets(loaded: Manifest, models: list[ModelEntry]) -> None:
 
 
 def _check_memory(
-    loaded: Manifest, running: frozenset[str], host: memory.HostMemory | None, force: bool
+    loaded: Manifest,
+    running: frozenset[str],
+    starting: frozenset[str],
+    host: memory.HostMemory | None,
+    force: bool,
 ) -> None:
     if host is None:
         err.print(
             "[warn]Cannot read the host's memory here; the memory preflight is skipped.[/warn]"
         )
         return
-    check = memory.preflight(loaded, host, running)
+    check = memory.preflight(loaded, host, running, starting)
     table = Table(title="Memory preflight", title_justify="left")
     for column in ("model", "share", "GiB", "state"):
         table.add_column(column)
@@ -137,7 +176,7 @@ def wait_healthy(
             state = compose.ps().get(model.name)
             if state is not None and state.health == "healthy":
                 return
-            if state is not None and (state.state == "exited" or state.health == "unhealthy"):
+            if state is not None and (state.state in STOPPED or state.health == "unhealthy"):
                 tail = compose.logs(model.name, tail=40)
                 err.print(f"[fail]{model.name} did not come up ({state.state}, {state.health}).")
                 err.print(tail, markup=False, highlight=False)
@@ -166,7 +205,8 @@ def up(
     try:
         states = compose.ps()
         running = frozenset(n for n, s in states.items() if s.state == "running")
-        _check_memory(loaded, running, memory.read_host_memory(), force)
+        starting = frozenset(model.name for model in chosen)
+        _check_memory(loaded, running, starting, memory.read_host_memory(), force)
         for model in chosen:
             current = states.get(model.name)
             if current is not None and current.health == "healthy":

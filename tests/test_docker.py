@@ -49,3 +49,9 @@ def test_a_non_zero_exit_raises_with_the_command_and_its_error(tmp_path: Path) -
     runner, _ = _answer(code=1)
     with pytest.raises(ComposeFailed, match="exited 1: boom"):
         Compose("p", tmp_path / "c.yaml", runner=runner).down()
+
+
+def test_down_removes_services_a_newer_manifest_dropped(tmp_path: Path) -> None:
+    runner, seen = _answer()
+    Compose("p", tmp_path / "c.yaml", runner=runner).down()
+    assert seen[-1][-2:] == ["down", "--remove-orphans"]

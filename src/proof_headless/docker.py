@@ -67,8 +67,9 @@ class Compose:
         self._call("up", "--detach", "--no-deps", service)
 
     def down(self) -> None:
-        """Stop and remove every service of the project, keeping caches and volumes."""
-        self._call("down")
+        """Stop and remove every service of the project, including services a newer manifest no
+        longer declares, keeping caches and volumes."""
+        self._call("down", "--remove-orphans")
 
     def ps(self) -> dict[str, ServiceState]:
         """Every service that has a container, by name."""

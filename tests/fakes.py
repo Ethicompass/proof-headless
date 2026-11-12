@@ -18,6 +18,8 @@ class FakeCompose:
 
     polls_to_healthy: int = 2
     fails: frozenset[str] = frozenset()
+    crash_loops: frozenset[str] = frozenset()
+    """Services that crash at start under `restart: unless-stopped`: `restarting`, never exited."""
     state: dict[str, dict[str, str]] = field(default_factory=dict)
     polls: dict[str, int] = field(default_factory=dict)
     calls: list[list[str]] = field(default_factory=list)
@@ -33,6 +35,9 @@ class FakeCompose:
             self.polls[service] = 0
         elif command == "ps":
             for service, row in self.state.items():
+                if service in self.crash_loops:
+                    row["State"] = "restarting"
+                    continue
                 if row["Health"] == "starting":
                     self.polls[service] += 1
                     if self.polls[service] >= self.polls_to_healthy:
