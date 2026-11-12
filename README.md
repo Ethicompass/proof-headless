@@ -71,8 +71,10 @@ is harmless. It asks lens-api to relaunch first (`POST /projects/{p}/runs/{r}/la
 cannot launch, it starts `lens-run` by hand with the environment the running lens-api container
 gives its jobs, through a 0600 env file deleted right after (`--manual` skips the relaunch,
 `--no-fallback` forbids the hand launch). A relaunch Lens refuses (404, 409) is reported and never
-launched by hand. The hand launch uses lens-api's `LENS_DOCKER_NETWORK`, as its dispatcher does. A
-dead container holding the run's name is recorded first (exit code, last log lines, redacted) under
+launched by hand; a lens-api without the relaunch route says so and points at `--manual`. The hand
+launch uses lens-api's `LENS_DOCKER_NETWORK`, as its dispatcher does. A
+dead container holding the run's name is recorded first (exit code, last log lines with every
+environment value of 8 or more characters redacted) under
 `$PROOF_HOME/bundles/<client>/lens/kills/`, then removed. It then waits for the result
 (`--timeout`).
 

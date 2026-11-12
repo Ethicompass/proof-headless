@@ -25,6 +25,7 @@ class FakeLens:
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     relaunch_answer: str = "launched"
     relaunch_status: int | None = None
+    relaunch_detail: str | None = None
     """An HTTP status the relaunch route answers with instead of launching."""
     polls_to_done: int = 1
     fails: frozenset[str] = frozenset()
@@ -80,7 +81,7 @@ class FakeLens:
         if request.method == "POST" and parts[-1] == "launch":
             self.relaunches.append(key)
             if self.relaunch_status is not None:
-                detail = f"run {key} is not admitted"
+                detail = self.relaunch_detail or f"run {key} is not admitted"
                 return httpx.Response(self.relaunch_status, json={"detail": detail})
             answer = {"project_id": parts[1], "run_id": parts[3], "launch": self.relaunch_answer}
             if self.relaunch_answer == "launch_failed":
@@ -142,7 +143,10 @@ class FakeDocker:
                 state["FinishedAt"] = "2026-11-12T10:00:00.123456789Z"
             return done(f"{json.dumps(state)}\t{self.created}\n")
         if args[1] == "logs":
-            return done("loading\n", stderr=f"Traceback: token {SECRET_VALUE} rejected\n")
+            return done(
+                "loading\n",
+                stderr=f'File "/app/lens_run/main.py": token {SECRET_VALUE} rejected\n',
+            )
         if args[1] == "inspect":
             document = {
                 "Config": {"Env": self.api_env},

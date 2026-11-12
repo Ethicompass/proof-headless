@@ -202,6 +202,7 @@ def test_a_dead_container_is_recorded_redacted_before_it_is_replaced(
     assert record["exit_code"] == 137 and record["container"] == name
     assert record["error"] == "lens-run killed by the runtime: exited 137"
     assert "***" in record["log_tail"] and SECRET_VALUE not in launched.record.read_text()
+    assert "/app/lens_run/main.py" in record["log_tail"]
 
 
 def test_a_dead_container_is_not_removed_without_a_place_for_its_record(lens: FakeLens) -> None:
@@ -252,15 +253,17 @@ def test_a_relaunch_lens_refuses_is_never_launched_by_hand(
     assert daemon.calls == []
 
 
-def test_a_lens_without_the_relaunch_route_falls_back_to_the_hand_launch(
-    lens: FakeLens, daemon: FakeDocker
+@pytest.mark.parametrize(("status", "detail"), [(404, "Not Found"), (405, "Method Not Allowed")])
+def test_a_lens_without_the_relaunch_route_is_refused_with_a_hint_to_launch_by_hand(
+    lens: FakeLens, daemon: FakeDocker, status: int, detail: str
 ) -> None:
     specs("r1")
     lens.put(f"{PROJECT}/r1", "accepted")
-    lens.relaunch_status = 405
-    result = runner.invoke(app, ["lens", "run", "acme", "r1", "--interval", "0"])
-    assert result.exit_code == 0, result.output
-    assert any(call[1] == "run" for call in daemon.calls)
+    lens.relaunch_status, lens.relaunch_detail = status, detail
+    result = runner.invoke(app, ["lens", "run", "acme", "r1"])
+    assert result.exit_code == 1
+    assert "retry with --manual" in " ".join(result.stdout.split())
+    assert daemon.calls == []
 
 
 def test_a_run_lens_never_received_is_refused_without_launching(

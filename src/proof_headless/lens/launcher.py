@@ -62,6 +62,8 @@ CREATE_TO_START_S = 60.0
 """How long a `created` container that never started counts as a launch in flight, as Lens's
 dispatcher bounds it (`lens_dispatch.docker.CREATE_TO_START_S`); older, it is a launch that died
 between its create and its start."""
+REDACT_MIN_LENGTH = 8
+"""The shortest value redacted from a kept log tail, the floor `proof evidence`'s scan uses."""
 LOG_TAIL = 50
 """The lines of a dead container kept with its record, as Lens keeps them (`LOG_TAIL`)."""
 
@@ -275,13 +277,19 @@ def keep_kill(
 ) -> Path:
     """Write the dead container's record, as Lens's `record_kill` writes it, under `directory`.
 
-    The log tail is redacted of every value of the job's environment before it is written, and the
-    file is readable only by its owner: the job is not supposed to log a secret, and this is not
-    where to find out it did.
+    The log tail is redacted of every value of the job's environment at least
+    `REDACT_MIN_LENGTH` characters long before it is written, and the file is readable only by its
+    owner: the job is not supposed to log a secret, and this is not where to find out it did. The
+    floor is the one the evidence scan uses: most of lens-api's settings are short, ordinary words
+    (`s3`, `env`, `lens`, `false`), and redacting those would turn every path and URL in the
+    traceback into `***`, which is the diagnosis the record exists to keep.
     """
     logs = runner(["docker", "logs", "--tail", str(LOG_TAIL), name])
     tail = (
-        redact((logs.stdout or "") + (logs.stderr or ""), api.env.values())
+        redact(
+            (logs.stdout or "") + (logs.stderr or ""),
+            (value for value in api.env.values() if len(value) >= REDACT_MIN_LENGTH),
+        )
         if logs.returncode == 0
         else None
     )
