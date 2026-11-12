@@ -19,6 +19,27 @@ from typing import Any
 from proof_headless.bundle.manifest import Bundle
 
 SIDECARS = ("pairs.json", "delivery.json", "grounding.json")
+DECLARATION_VERSION = "lens_declaration/"
+
+
+def canonical_digest(payload: Any) -> str:
+    """The hex SHA-256 Lens names a declaration by: of its canonical JSON (sorted keys, compact
+    separators, UTF-8 unescaped), not of the file's bytes, so reformatting a file never renames it.
+    The definition is Lens's `lens_contracts.digest.canonical_json`."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _paths(bundle: Bundle) -> list[tuple[str, Path]]:
+    named: list[tuple[str, Path]] = [(f"catalogue {e.name}", e.path) for e in bundle.catalogues]
+    named += [(f"profile {e.name}", e.path) for e in bundle.profiles]
+    named += [(f"prior {e.name}", e.path) for e in bundle.priors]
+    named += [(f"mapping {e.name}", e.path) for e in bundle.mappings]
+    named += [(f"brain {b.name}", b.config) for b in bundle.brains]
+    named += [(f"declaration {d.path.name}", d.path) for d in bundle.declarations]
+    if bundle.matrix is not None:
+        named.append(("matrix", bundle.matrix))
+    return named
 
 
 @dataclass(frozen=True)
@@ -43,6 +64,9 @@ def _json(path: Path, where: str, problems: list[Problem]) -> Any:
 def check(bundle: Bundle, secret_names: frozenset[str]) -> list[Problem]:
     """Every problem found, in manifest order; empty means the bundle may be loaded."""
     problems: list[Problem] = []
+    for where, path in _paths(bundle):
+        if not path.resolve().is_relative_to(bundle.root):
+            problems.append(Problem(where, f"{path} is outside the bundle"))
     for entry in bundle.catalogues:
         where = f"catalogue {entry.name}"
         if not entry.path.is_dir():
@@ -53,21 +77,29 @@ def check(bundle: Bundle, secret_names: frozenset[str]) -> list[Problem]:
             problems.append(Problem(where, "catalogue.json must be an object"))
         for sidecar in SIDECARS:
             if (entry.path / sidecar).exists():
-                _json(entry.path / sidecar, where, problems)
-    for entry in bundle.profiles:
-        profile = _json(entry.path, f"profile {entry.name}", problems)
+                value = _json(entry.path / sidecar, where, problems)
+                if (
+                    sidecar == "grounding.json"
+                    and value is not None
+                    and (not isinstance(value, dict) or "needs_base" not in value)
+                ):
+                    problems.append(Problem(where, "grounding.json must have `needs_base`"))
+    for profile_entry in bundle.profiles:
+        profile = _json(profile_entry.path, f"profile {profile_entry.name}", problems)
         if profile is not None and not isinstance(profile, dict):
-            problems.append(Problem(f"profile {entry.name}", "must be a JSON object"))
-    for entry in bundle.priors:
-        phrasings = _json(entry.path, f"prior {entry.name}", problems)
+            problems.append(Problem(f"profile {profile_entry.name}", "must be a JSON object"))
+    for prior_entry in bundle.priors:
+        phrasings = _json(prior_entry.path, f"prior {prior_entry.name}", problems)
         if phrasings is not None and not (
             isinstance(phrasings, list) and phrasings and all(isinstance(p, str) for p in phrasings)
         ):
-            problems.append(Problem(f"prior {entry.name}", "must be a non-empty list of strings"))
-    for entry in bundle.mappings:
-        mapping = _json(entry.path, f"mapping {entry.name}", problems)
+            problems.append(
+                Problem(f"prior {prior_entry.name}", "must be a non-empty list of strings")
+            )
+    for mapping_entry in bundle.mappings:
+        mapping = _json(mapping_entry.path, f"mapping {mapping_entry.name}", problems)
         if mapping is not None and not isinstance(mapping, dict):
-            problems.append(Problem(f"mapping {entry.name}", "must be a JSON object"))
+            problems.append(Problem(f"mapping {mapping_entry.name}", "must be a JSON object"))
     for brain in bundle.brains:
         if not brain.config.is_file():
             problems.append(Problem(f"brain {brain.name}", f"missing {brain.config}"))
@@ -76,9 +108,15 @@ def check(bundle: Bundle, secret_names: frozenset[str]) -> list[Problem]:
         if not declaration.path.is_file():
             problems.append(Problem(where, f"missing file {declaration.path}"))
             continue
-        digest = hashlib.sha256(declaration.path.read_bytes()).hexdigest()
+        payload = _json(declaration.path, where, problems)
+        if payload is None:
+            continue
+        version = payload.get("contract_version", "") if isinstance(payload, dict) else ""
+        if not str(version).startswith(DECLARATION_VERSION):
+            problems.append(Problem(where, f"not a Lens declaration ({DECLARATION_VERSION}...)"))
+        digest = canonical_digest(payload)
         if declaration.path.name != digest:
-            problems.append(Problem(where, f"must be named by its SHA-256, {digest}"))
+            problems.append(Problem(where, f"must be named by its canonical digest, {digest}"))
     if bundle.matrix is not None and not bundle.matrix.is_file():
         problems.append(Problem("matrix", f"missing file {bundle.matrix}"))
     for name in bundle.secrets:

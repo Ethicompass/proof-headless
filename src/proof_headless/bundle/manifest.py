@@ -27,6 +27,12 @@ class Entry(BaseModel):
     path: Path
 
 
+class Catalogue(Entry):
+    """A catalogue directory, and the behavioral contract compute validates it against."""
+
+    contract: str = Field(default="pi", min_length=1)
+
+
 class Brain(BaseModel):
     """A vitruvio brain to publish to the appliance's registry."""
 
@@ -59,7 +65,7 @@ class Bundle(BaseModel):
     """The run context Yield's generator and attackers write in: `domain`, `tone`, ..."""
     secrets: tuple[str, ...] = ()
     """Names the bundle's specs reference by `secret_ref`; each must be in the secrets file."""
-    catalogues: tuple[Entry, ...] = ()
+    catalogues: tuple[Catalogue, ...] = ()
     profiles: tuple[Entry, ...] = ()
     priors: tuple[Entry, ...] = ()
     mappings: tuple[Entry, ...] = ()

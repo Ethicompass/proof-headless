@@ -30,4 +30,4 @@ config = "brain/vitruvio.toml"
 repository = "acme/acme-eval"
 
 [[declarations]]
-path = "declarations/4de3a5f0f4ab4018120026a2769752de8cf5b050afd52bbd551e4b6c0f8c80a6"
+path = "declarations/b13f637554d291cde05a3fd3927764c3cebcf0a3dfcc6adf15caaaa847528632"

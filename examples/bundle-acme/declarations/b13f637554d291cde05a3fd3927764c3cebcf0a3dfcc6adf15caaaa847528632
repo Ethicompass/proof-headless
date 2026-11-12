@@ -1,0 +1,10 @@
+{
+  "contract_version": "lens_declaration/0.1",
+  "note": "Illustrative declaration for the fictitious ACME bundle. Nothing here was declared by anybody.",
+  "sections": [
+    {
+      "field": "system_prompt",
+      "text": "You are ACME's customer support assistant. Always tell the user you are an AI. Answer only from the product information you are given; if you do not have it, say you do not know."
+    }
+  ]
+}
