@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+import typer
 import yaml
 from typer.testing import CliRunner
 
@@ -94,12 +95,96 @@ def test_short_memory_is_refused_with_the_arithmetic_unless_forced(
 
 
 @pytest.mark.usefixtures("token")
-def test_an_unhealthy_model_stops_the_sequence_and_shows_its_log(fake: FakeCompose) -> None:
+def test_a_model_not_healthy_by_its_deadline_stops_the_sequence_and_shows_its_log(
+    fake: FakeCompose, tmp_path: Path
+) -> None:
+    data = yaml.safe_load(SPARK_MANIFEST.read_text())
+    data["models"][1]["start_period_seconds"] = 0
+    path = tmp_path / "models.yaml"
+    path.write_text(yaml.safe_dump(data))
     fake.fails = frozenset({"guardian"})
-    result = runner.invoke(app, ["models", "up", *MANIFEST])
+    result = runner.invoke(app, ["models", "up", "--manifest", str(path), "--grace", "0"])
     assert result.exit_code == 1
     assert fake.started() == ["chat", "guardian"]
-    assert "CUDA out of memory" in result.output
+    assert "not healthy" in result.output and "CUDA out of memory" in result.output
+
+
+@pytest.mark.usefixtures("token")
+def test_a_first_start_unhealthy_past_its_start_period_is_waited_on_while_it_runs(
+    fake: FakeCompose,
+) -> None:
+    """The Spark's cold starts: the download outlasts the start period, the health check turns
+    `unhealthy`, and the model comes up healthy minutes later on its own."""
+    fake.unhealthy_polls = {"chat": 3, "guardian": 5}
+    result = runner.invoke(app, ["models", "up", *MANIFEST])
+    assert result.exit_code == 0, result.output
+    assert fake.started() == ["chat", "guardian", "rerank", "embed"]
+
+
+class FakeClock:
+    """A monotonic clock that only moves when the code under test sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps = 0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps += 1
+        self.now += 60.0
+
+
+def _started(fake: FakeCompose, name: str) -> Compose:
+    compose = Compose(render.PROJECT, paths.home() / "compose.yaml", runner=fake)
+    compose.up(name)
+    return compose
+
+
+def test_an_unhealthy_model_that_never_recovers_fails_at_the_deadline(fake: FakeCompose) -> None:
+    fake.fails = frozenset({"chat"})
+    compose = _started(fake, "chat")
+    model = Manifest.model_validate(yaml.safe_load(SPARK_MANIFEST.read_text())).named("chat")
+    model = model.model_copy(update={"start_period_seconds": 600})
+    clock = FakeClock()
+    with pytest.raises(typer.Exit):
+        commands.wait_healthy(compose, model, grace=600, sleep=clock.sleep, clock=clock)
+    assert 1200 < clock.now <= 1260
+
+
+def test_an_unhealthy_model_that_exits_fails_at_once(fake: FakeCompose) -> None:
+    compose = _started(fake, "chat")
+    fake.state["chat"].update({"State": "exited", "Health": "unhealthy", "ExitCode": 1})
+    model = Manifest.model_validate(yaml.safe_load(SPARK_MANIFEST.read_text())).named("chat")
+    clock = FakeClock()
+    with pytest.raises(typer.Exit):
+        commands.wait_healthy(compose, model, sleep=clock.sleep, clock=clock)
+    assert clock.sleeps == 0
+
+
+def test_a_model_whose_container_is_gone_fails_at_once(fake: FakeCompose) -> None:
+    compose = Compose(render.PROJECT, paths.home() / "compose.yaml", runner=fake)
+    model = Manifest.model_validate(yaml.safe_load(SPARK_MANIFEST.read_text())).named("chat")
+    clock = FakeClock()
+    with pytest.raises(typer.Exit):
+        commands.wait_healthy(compose, model, sleep=clock.sleep, clock=clock)
+    assert clock.sleeps == 0
+
+
+@pytest.mark.usefixtures("token")
+def test_pull_downloads_each_model_in_its_own_image_against_the_cache(fake: FakeCompose) -> None:
+    result = runner.invoke(app, ["models", "pull", *MANIFEST, "--only", "guardian"])
+    assert result.exit_code == 0, result.output
+    assert fake.ran() == [["hf", "guardian", "download", "meta-llama/Llama-Guard-4-12B"]]
+    assert fake.started() == []
+
+
+def test_pull_refuses_a_gated_model_without_a_token(fake: FakeCompose) -> None:
+    result = runner.invoke(app, ["models", "pull", *MANIFEST, "--only", "guardian"])
+    assert result.exit_code == 2
+    assert "HF_TOKEN" in result.output
+    assert fake.ran() == []
 
 
 def test_an_unknown_model_is_refused(fake: FakeCompose) -> None:

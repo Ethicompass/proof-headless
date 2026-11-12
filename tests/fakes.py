@@ -18,6 +18,9 @@ class FakeCompose:
 
     polls_to_healthy: int = 2
     fails: frozenset[str] = frozenset()
+    unhealthy_polls: dict[str, int] = field(default_factory=dict)
+    """Services that read `unhealthy` for this many polls past `starting`, then `healthy`: a
+    first start whose download outlasts the health check's start period."""
     crash_loops: frozenset[str] = frozenset()
     """Services that crash while loading under `restart: unless-stopped`: docker brings them back
     to `running` before most polls, so only their restart count shows it."""
@@ -50,7 +53,7 @@ class FakeCompose:
             self.missing_networks.discard(args[3])
         if args[1] in {"network", "pull"}:
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-        command = next(a for a in args[2:] if a in {"up", "ps", "logs", "down", "pull"})
+        command = next(a for a in args[2:] if a in {"up", "ps", "logs", "down", "pull", "run"})
         stdout = ""
         if command == "up":
             started = [args[-1]] if not args[-1].startswith("-") else list(self.services)
@@ -67,10 +70,15 @@ class FakeCompose:
                 if service in self.crash_loops:
                     self.restarts[service] = self.restarts.get(service, 0) + 1
                     continue
+                if row["Health"] == "unhealthy" and self.unhealthy_polls.get(service):
+                    self.unhealthy_polls[service] -= 1
+                    if not self.unhealthy_polls[service]:
+                        row["Health"] = "healthy"
                 if row["Health"] == "starting":
                     self.polls[service] += 1
                     if self.polls[service] >= self.polls_to_healthy:
-                        row["Health"] = "unhealthy" if service in self.fails else "healthy"
+                        late = service in self.fails or self.unhealthy_polls.get(service)
+                        row["Health"] = "unhealthy" if late else "healthy"
             stdout = "\n".join(json.dumps(row) for row in self.state.values())
         elif command == "logs":
             stdout = "CUDA out of memory\n"
@@ -95,3 +103,8 @@ class FakeCompose:
 
     def started(self) -> list[str]:
         return [call[-1] for call in self.calls if "up" in call]
+
+    def ran(self) -> list[list[str]]:
+        """What each `run` call ran: the service and its arguments, after the options."""
+        runs = [call[call.index("run") + 1 :] for call in self.calls if "run" in call]
+        return [[a for a in run if not a.startswith("-")] for run in runs]

@@ -160,6 +160,14 @@ class Compose:
         """Pull every service's image, so a slow download is not mistaken for a slow start."""
         self._call("pull", "--quiet")
 
+    def run_once(self, service: str, entrypoint: str, *args: str) -> str:
+        """Run `entrypoint args` once in a throwaway container of `service`, with its image,
+        environment and volumes, and return what it printed. No ports are published and the
+        service's own container, if any, is left alone."""
+        return self._call(
+            "run", "--rm", "--no-deps", "-T", "--entrypoint", entrypoint, service, *args
+        )
+
     def restarts(self, service: str) -> Restarts:
         """The service's container and how many times its restart policy restarted it.
 

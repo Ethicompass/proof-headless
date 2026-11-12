@@ -40,11 +40,21 @@ for a DGX Spark). Copy it to `$PROOF_HOME/models.yaml` (default `~/.proof/models
 
 ```sh
 proof models validate      # check the manifest and its memory arithmetic
+proof models pull          # optional: download the weights first, so `up` only loads them
 proof models up            # start each model after the previous is healthy
 proof models status        # container state and health per model
 proof models logs chat     # the last lines of one model's log
 proof models down          # stop them; downloaded weights stay cached
 ```
+
+A first start downloads the weights, and on a slow link that outlasts the health check's start
+period (`start_period_seconds`, 20 minutes by default): the container reads `unhealthy` while it
+is still downloading. `up` keeps waiting on a model whose container runs and has not restarted,
+until its start period plus `--grace` (an hour by default), and its status line shows the bytes in
+the model's cache directory (`<hf_cache>/hub/models--<org>--<name>`) and the rate they arrive at.
+A model that exits, dies or restarts stops the sequence at once, with its log. `proof models pull`
+(`--only` for some) runs `hf download` in each model's image against the same cache and
+`HF_TOKEN`, so the download happens before `up` and `up` only loads.
 
 `proof doctor` then probes each model the way a run will use it: chat models for logprobs with
 twenty alternatives, JSON-schema output and their reasoning switch, the guard for its verdict, the
