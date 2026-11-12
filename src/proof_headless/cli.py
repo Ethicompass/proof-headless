@@ -18,6 +18,7 @@ from proof_headless import __version__
 from proof_headless.bundle.commands import app as bundle_app
 from proof_headless.console import out
 from proof_headless.doctor import doctor
+from proof_headless.lens.commands import app as lens_app
 from proof_headless.models.commands import app as models_app
 from proof_headless.spec.commands import app as spec_app
 
@@ -42,6 +43,7 @@ def interactive() -> bool:
 app.add_typer(models_app, name="models")
 app.add_typer(bundle_app, name="bundle")
 app.add_typer(spec_app, name="spec")
+app.add_typer(lens_app, name="lens")
 app.command()(doctor)
 
 
