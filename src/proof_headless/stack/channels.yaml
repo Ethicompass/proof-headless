@@ -1,9 +1,10 @@
 # The image references `proof stack pin` resolves to digests, per channel. Data, not code: a
 # promotion of Yield or Lens is an edit of the `release` block here, reviewed like any change.
 #
-# `develop` follows the integration branches of Yield and Lens; their `:develop` images are
-# published for amd64 and arm64. `release` names the released versions, which are amd64 only until
-# the next promotion publishes both. The images under `common` are the same on both channels.
+# `develop` follows the integration branches of Yield and Lens. `release` names the released
+# versions. Both are published for amd64 and arm64 since yield api 0.1.13, driver 0.1.10, compute
+# 0.1.14 and lens api 0.1.10, run 0.1.12. The images under `common` are the same on both
+# channels.
 develop:
   yield-api: ghcr.io/ethicompass/yield-api:develop
   yield-driver: ghcr.io/ethicompass/yield-driver:develop
@@ -11,11 +12,11 @@ develop:
   lens-api: ghcr.io/ethicompass/lens-api:develop
   lens-run: ghcr.io/ethicompass/lens-run:develop
 release:
-  yield-api: ghcr.io/ethicompass/yield-api:0.1.12
-  yield-driver: ghcr.io/ethicompass/yield-driver:0.1.9
-  yield-compute: ghcr.io/ethicompass/yield-compute:0.1.13
-  lens-api: ghcr.io/ethicompass/lens-api:0.1.9
-  lens-run: ghcr.io/ethicompass/lens-run:0.1.11
+  yield-api: ghcr.io/ethicompass/yield-api:0.1.13
+  yield-driver: ghcr.io/ethicompass/yield-driver:0.1.10
+  yield-compute: ghcr.io/ethicompass/yield-compute:0.1.14
+  lens-api: ghcr.io/ethicompass/lens-api:0.1.10
+  lens-run: ghcr.io/ethicompass/lens-run:0.1.12
 common:
   minio: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
   valkey: valkey/valkey:8-alpine
