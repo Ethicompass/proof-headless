@@ -1,0 +1,323 @@
+name: proof-stack
+services:
+  yield-minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    command: server /data --console-address ":9001"
+    ports:
+    - 127.0.0.1:9000:9000
+    - 127.0.0.1:9001:9001
+    environment:
+      MINIO_ROOT_USER: ${YIELD_S3_ACCESS_KEY:-yieldadmin}
+      MINIO_ROOT_PASSWORD: ${YIELD_S3_SECRET_KEY:-yieldadmin}
+    volumes:
+    - yield_minio:/data
+    networks:
+    - proof-yield
+    - proof-stack
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - mc
+      - ready
+      - local
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  yield-minio-buckets:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    depends_on:
+      yield-minio:
+        condition: service_healthy
+    entrypoint:
+    - /bin/sh
+    - -c
+    - mc alias set local http://yield-minio:9000 ${YIELD_S3_ACCESS_KEY:-yieldadmin}
+      ${YIELD_S3_SECRET_KEY:-yieldadmin} && mc mb --ignore-existing local/yield &&
+      mc mb --ignore-existing local/yield-results
+    networks:
+    - proof-yield
+  yield-valkey:
+    image: valkey/valkey:8-alpine@sha256:2602ace2be6569bc2bbb06f873776516ab9089821525be34f4305c67eb9db02a
+    command: valkey-server --save "" --appendonly no
+    ports:
+    - 127.0.0.1:6379:6379
+    networks:
+    - proof-yield
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - valkey-cli
+      - ping
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  yield-compute:
+    image: ghcr.io/ethicompass/yield-compute:develop@sha256:5a330233136a10cc0c08ed013e1690a5fc6fe3f8b76f067d60b6e4bdbaef4ec6
+    depends_on:
+      yield-minio-buckets:
+        condition: service_completed_successfully
+      yield-valkey:
+        condition: service_healthy
+    ports:
+    - 127.0.0.1:8081:8080
+    environment:
+      YIELD_STORE_BACKEND: s3
+      YIELD_S3_ENDPOINT: http://yield-minio:9000
+      YIELD_S3_BUCKET: yield
+      YIELD_S3_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:-yieldadmin}
+      YIELD_S3_SECRET_KEY: ${YIELD_S3_SECRET_KEY:-yieldadmin}
+      YIELD_JOBS_BACKEND: valkey
+      YIELD_JOBS_URL: redis://yield-valkey:6379/0
+      YIELD_SECRETS_BACKEND: env
+      YIELD_DISPATCH_BACKEND: docker
+      YIELD_DOCKER_NETWORK: proof-yield
+      YIELD_EXTRA_NETWORKS: proof-stack,proof-models
+      YIELD_COMPUTE_IMAGE: ghcr.io/ethicompass/yield-compute:develop@sha256:5a330233136a10cc0c08ed013e1690a5fc6fe3f8b76f067d60b6e4bdbaef4ec6
+      YIELD_JUDGE_PROBE_TIMEOUT_SECONDS: '30'
+      YIELD_BRAIN_REGISTRY_INSECURE: 'true'
+      YIELD_BRAIN_REGISTRY_SECRET_REF: ''
+      ACME_TARGET_KEY: ${ACME_TARGET_KEY:-}
+    volumes: &id001
+    - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+    - proof-yield
+    - proof-stack
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request as r; r.urlopen('http://localhost:8080/healthz', timeout=5)
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+  yield-seed:
+    image: python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+    depends_on:
+      yield-compute:
+        condition: service_healthy
+    volumes:
+    - ./seed/yield:/seed:ro
+    environment:
+      COMPUTE: http://yield-compute:8080
+    entrypoint:
+    - bash
+    - /seed/seed.sh
+    networks:
+    - proof-yield
+  yield-api:
+    image: ghcr.io/ethicompass/yield-api:develop@sha256:ad02b522d2da0e5de4df6723355d2770ed8de1d28796f67726caaa01913de32c
+    depends_on:
+      yield-minio-buckets:
+        condition: service_completed_successfully
+      yield-valkey:
+        condition: service_healthy
+      yield-seed:
+        condition: service_completed_successfully
+    ports:
+    - 127.0.0.1:8080:8080
+    environment:
+      YIELD_STORE_BACKEND: s3
+      YIELD_S3_ENDPOINT: http://yield-minio:9000
+      YIELD_S3_BUCKET: yield
+      YIELD_S3_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:-yieldadmin}
+      YIELD_S3_SECRET_KEY: ${YIELD_S3_SECRET_KEY:-yieldadmin}
+      YIELD_JOBS_BACKEND: valkey
+      YIELD_JOBS_URL: redis://yield-valkey:6379/0
+      YIELD_SECRETS_BACKEND: env
+      YIELD_DISPATCH_BACKEND: docker
+      YIELD_DOCKER_NETWORK: proof-yield
+      YIELD_EXTRA_NETWORKS: proof-stack,proof-models
+      YIELD_DRIVER_IMAGE: ghcr.io/ethicompass/yield-driver:develop@sha256:b805e36444c762a22affd506c7b17d3dd9c270b942a54fb0b34193b20df3f52c
+      YIELD_COMPUTE_URL: http://yield-compute:8080
+      ACME_TARGET_KEY: ${ACME_TARGET_KEY:-}
+    volumes: *id001
+    networks:
+    - proof-yield
+    - proof-stack
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request as r; r.urlopen('http://localhost:8080/healthz', timeout=5)
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+  lens-minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    command: server /data --console-address ":9001"
+    ports:
+    - 127.0.0.1:9100:9000
+    - 127.0.0.1:9101:9001
+    environment:
+      MINIO_ROOT_USER: ${LENS_S3_ACCESS_KEY:-lensadmin}
+      MINIO_ROOT_PASSWORD: ${LENS_S3_SECRET_KEY:-lensadmin}
+    volumes:
+    - lens_minio:/data
+    networks:
+    - proof-lens
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - mc
+      - ready
+      - local
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  lens-minio-buckets:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    depends_on:
+      lens-minio:
+        condition: service_healthy
+    entrypoint:
+    - /bin/sh
+    - -c
+    - mc alias set local http://lens-minio:9000 ${LENS_S3_ACCESS_KEY:-lensadmin} ${LENS_S3_SECRET_KEY:-lensadmin}
+      && mc mb --ignore-existing local/lens && mc mb --ignore-existing local/lens-events
+    networks:
+    - proof-lens
+  lens-declarations:
+    image: python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+    command:
+    - python
+    - -m
+    - http.server
+    - '8080'
+    - --directory
+    - /srv
+    volumes:
+    - ../declarations:/srv/declarations:ro
+    networks:
+    - proof-lens
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request as r; r.urlopen('http://localhost:8080/', timeout=5)
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+  lens-api:
+    image: ghcr.io/ethicompass/lens-api:develop@sha256:ec5b2cf33a038001fe1597eba78943d1b100ac2a83adb2467dfa675d7b615ab5
+    depends_on:
+      lens-minio-buckets:
+        condition: service_completed_successfully
+      lens-declarations:
+        condition: service_started
+    ports:
+    - 127.0.0.1:8090:8080
+    environment:
+      LENS_STORE_BACKEND: s3
+      LENS_DISPATCH_BACKEND: docker
+      LENS_RUN_IMAGE: ghcr.io/ethicompass/lens-run:develop@sha256:0c75a44ebd1bc3db245d26b7ea8b7452508278eadb233448a63c6d61b8eef7fc
+      LENS_DOCKER_NETWORK: proof-lens
+      LENS_EXTRA_NETWORKS: proof-stack,proof-models
+      LENS_JOBS_BACKEND: memory
+      LENS_SECRETS_BACKEND: env
+      LENS_PUBLIC_BASE_URL: http://localhost:8090
+      LENS_S3_ENDPOINT: http://lens-minio:9000
+      LENS_S3_BUCKET: lens
+      LENS_S3_ACCESS_KEY: ${LENS_S3_ACCESS_KEY:-lensadmin}
+      LENS_S3_SECRET_KEY: ${LENS_S3_SECRET_KEY:-lensadmin}
+      LENS_DEFAULT_JUDGE_CALIBRATION_REF: sha256:831448f5cf5b72fd4cd045913e93b8993c3a823efb655eaea66c7e0aee055d2f
+      LENS_DEFAULT_RULES_REF: sha256:db1eeb942b11c1acfb8821c67f7971141af5a0195bc79111accbb784a9462b3f
+      LENS_DEFAULT_CONTRACT_REF: sha256:8e9c1e6b8de6ec84e50dc47c0669da7c12d331c2c93f573b4c03c0c7c9b73876
+      LENS_WEBHOOK_SIGNING_SECRET_REF: LENS_WEBHOOK_SIGNING_SECRET
+      LENS_WEBHOOK_SIGNING_SECRET: ${LENS_WEBHOOK_SIGNING_SECRET:-lens-local-signing-secret}
+      LENS_YIELD_STORE_ENABLED: 'true'
+      LENS_YIELD_STORE_ENDPOINT: http://yield-minio:9000
+      LENS_YIELD_STORE_BUCKET: yield
+      LENS_YIELD_STORE_ACCESS_KEY: ${YIELD_S3_ACCESS_KEY:-yieldadmin}
+      LENS_YIELD_STORE_SECRET_KEY: ${YIELD_S3_SECRET_KEY:-yieldadmin}
+      LENS_DECLARATION_SOURCE: http
+      LENS_DECLARATION_SOURCE_URL: http://lens-declarations:8080
+      LENS_MODEL_READER_PROVIDER: openai_compatible
+      LENS_MODEL_READER_BASE_URL: http://chat:8000/v1
+      LENS_MODEL_READER_ID: nemotron-3.5-lightning
+      LENS_MODEL_READER_STRUCTURED_OUTPUT: json_schema
+      LENS_MODEL_READER_EXTRA_BODY: '{"chat_template_kwargs": {"enable_thinking":
+        false}}'
+      LENS_MODEL_CURATOR_PROVIDER: openai_compatible
+      LENS_MODEL_CURATOR_BASE_URL: http://chat:8000/v1
+      LENS_MODEL_CURATOR_ID: nemotron-3.5-lightning
+      LENS_MODEL_CURATOR_STRUCTURED_OUTPUT: json_schema
+      LENS_MODEL_CURATOR_EXTRA_BODY: '{"chat_template_kwargs": {"enable_thinking":
+        false}}'
+    volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+    - proof-lens
+    - proof-stack
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request as r; r.urlopen('http://localhost:8080/healthz', timeout=5)
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+  lens-seed:
+    image: python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+    depends_on:
+      lens-api:
+        condition: service_healthy
+    volumes:
+    - ./seed/lens:/seed:ro
+    entrypoint:
+    - python
+    - /seed/seed.py
+    - http://lens-api:8080
+    - calibrations|illustrative|calibrations/illustrative.json|sha256:831448f5cf5b72fd4cd045913e93b8993c3a823efb655eaea66c7e0aee055d2f
+    - rules|default|rules/default.json|sha256:db1eeb942b11c1acfb8821c67f7971141af5a0195bc79111accbb784a9462b3f
+    - contracts|weights|contracts/weights.json|sha256:8e9c1e6b8de6ec84e50dc47c0669da7c12d331c2c93f573b4c03c0c7c9b73876
+    networks:
+    - proof-lens
+  brain-registry:
+    image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+    ports:
+    - 127.0.0.1:5051:5000
+    volumes:
+    - brain_registry:/var/lib/registry
+    networks:
+    - proof-yield
+    - proof-stack
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - --spider
+      - http://127.0.0.1:5000/v2/
+      interval: 5s
+      timeout: 3s
+      retries: 12
+networks:
+  proof-yield:
+    name: proof-yield
+  proof-lens:
+    name: proof-lens
+  proof-stack:
+    name: proof-stack
+  proof-models:
+    name: proof-models
+    external: true
+volumes:
+  yield_minio: {}
+  lens_minio: {}
+  brain_registry: {}

@@ -1,6 +1,8 @@
 """`proof doctor`: prove every served model answers the way a run will need, before it runs.
 
-Each model is probed on its loopback port with the probes its roles call for. The outcome is a
+Each model is probed on its loopback port with the probes its roles call for. With `--stack`,
+Yield, Lens, their stores, Valkey and the brain registry are probed on theirs as well, and the
+report names the image lock they run from. The outcome is a
 Rich table for the operator and a JSON report under `$PROOF_HOME/evidence/`, because what the
 models answered on the day is part of an engagement's evidence: the report says which model,
 served under which name, passed which check. The exit code is non-zero when any probe failed, so a
@@ -24,6 +26,8 @@ from proof_headless.console import err, out
 from proof_headless.models import manifest as manifests
 from proof_headless.models import probes
 from proof_headless.models.manifest import Manifest, ManifestInvalid, ModelEntry
+from proof_headless.stack import lock as locks
+from proof_headless.stack import probes as stack_probes
 
 ClientFor = Callable[[ModelEntry, str, float], httpx.Client]
 
@@ -52,9 +56,11 @@ def examine(
     return results
 
 
-def report(manifest: Manifest, results: list[probes.Result]) -> dict[str, object]:
+def report(
+    manifest: Manifest | None, results: list[probes.Result], lock: locks.Lock | None = None
+) -> dict[str, object]:
     """The JSON report: when, with what, and every probe's outcome."""
-    return {
+    document: dict[str, object] = {
         "proof": __version__,
         "at": datetime.now(UTC).isoformat(timespec="seconds"),
         "models": {
@@ -64,11 +70,29 @@ def report(manifest: Manifest, results: list[probes.Result]) -> dict[str, object
                 "image": model.image,
                 "gpu_memory_utilization": model.gpu_memory_utilization,
             }
-            for model in manifest.models
+            for model in (manifest.models if manifest else ())
         },
-        "results": [asdict(result) for result in results],
-        "passed": all(result.ok for result in results),
     }
+    if lock is not None:
+        document["stack"] = {
+            "channel": lock.channel,
+            "images": {name: image.pinned for name, image in lock.images.items()},
+        }
+    document["results"] = [asdict(result) for result in results]
+    document["passed"] = all(result.ok for result in results)
+    return document
+
+
+def _stack_lock() -> locks.Lock | None:
+    """The lock the stack runs from, for the report; a stack started from another lock path
+    still gets probed, it just goes unnamed."""
+    try:
+        return locks.load(paths.default_lock())
+    except locks.LockInvalid:
+        err.print(
+            "[warn]No readable $PROOF_HOME/appliance.lock; the report names no images.[/warn]"
+        )
+        return None
 
 
 def write_report(document: dict[str, object]) -> Path:
@@ -86,21 +110,36 @@ def doctor(
         None, "--manifest", "-m", help="The models manifest. Default: $PROOF_HOME/models.yaml."
     ),
     only: list[str] = typer.Option([], "--only", help="Probe only these models (repeatable)."),
-    host: str = typer.Option("127.0.0.1", "--host", help="Where the models' ports are bound."),
+    models: bool = typer.Option(True, "--models/--no-models", help="Probe the served models."),
+    stack: bool = typer.Option(
+        False, "--stack", help="Also probe Yield, Lens, MinIO, Valkey and the brain registry."
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="Where the ports are bound."),
     timeout: float = typer.Option(300.0, "--timeout", help="Seconds per request."),
     as_json: bool = typer.Option(False, "--json", help="Print the report as JSON."),
 ) -> None:
-    """Probe every served model the way Yield and Lens will use it."""
-    try:
-        loaded = manifests.load(manifest or paths.default_manifest())
-        results = examine(loaded, only, host=host, timeout=timeout)
-    except ManifestInvalid as error:
-        err.print(f"[fail]Invalid manifest.[/fail] {error}")
-        raise typer.Exit(2) from None
-    except KeyError as error:
-        err.print(f"[fail]{error.args[0]}[/fail]")
-        raise typer.Exit(2) from None
-    document = report(loaded, results)
+    """Probe every served model the way Yield and Lens will use it, and with --stack the stack."""
+    loaded: Manifest | None = None
+    results: list[probes.Result] = []
+    if models:
+        try:
+            loaded = manifests.load(manifest or paths.default_manifest())
+            results = examine(loaded, only, host=host, timeout=timeout)
+        except ManifestInvalid as error:
+            err.print(f"[fail]Invalid manifest.[/fail] {error}")
+            raise typer.Exit(2) from None
+        except KeyError as error:
+            err.print(f"[fail]{error.args[0]}[/fail]")
+            raise typer.Exit(2) from None
+    lock = None
+    if stack:
+        lock = _stack_lock()
+        with err.status("Probing the stack"):
+            results += stack_probes.examine(host, min(timeout, 10.0))
+    if not results:
+        err.print("[fail]Nothing to probe.[/fail] Drop --no-models or add --stack.")
+        raise typer.Exit(2)
+    document = report(loaded, results, lock)
     path = write_report(document)
     if as_json:
         out.print_json(json.dumps(document))

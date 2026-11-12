@@ -17,7 +17,7 @@ def test_each_model_is_a_service_on_the_models_network_reachable_on_loopback_onl
     manifest = load(SPARK_MANIFEST)
     document = render.compose(manifest)
     assert document["name"] == render.PROJECT
-    assert document["networks"] == {"proof-models": {"name": "proof-models"}}
+    assert document["networks"] == {"proof-models": {"name": "proof-models", "external": True}}
     for model in manifest.models:
         service = document["services"][model.name]
         assert service["ports"] == [f"127.0.0.1:{model.port}:8000"]

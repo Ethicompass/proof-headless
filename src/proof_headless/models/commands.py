@@ -18,12 +18,20 @@ import typer
 import yaml
 from rich.table import Table
 
-from proof_headless import paths, secrets
+from proof_headless import paths
 from proof_headless.console import err, out
-from proof_headless.docker import Compose, ComposeFailed, Restarts, ServiceState
+from proof_headless.docker import (
+    Compose,
+    ComposeFailed,
+    Restarts,
+    ServiceState,
+    appliance,
+    ensure_network,
+)
 from proof_headless.models import manifest as manifests
 from proof_headless.models import memory, render
 from proof_headless.models.manifest import Manifest, ManifestInvalid, ModelEntry
+from proof_headless.secrets_commands import require
 
 app = typer.Typer(help="Serve the models in a manifest with vLLM.", no_args_is_help=True)
 
@@ -59,7 +67,8 @@ def _shares_table(path: Path) -> Table | None:
     return table
 
 
-def _load(path: Path | None) -> Manifest:
+def load_manifest(path: Path | None) -> Manifest:
+    """The manifest at `path` (default `$PROOF_HOME/models.yaml`), or a refusal saying why."""
     target = path or paths.default_manifest()
     try:
         return manifests.load(target)
@@ -74,8 +83,7 @@ def _load(path: Path | None) -> Manifest:
 
 def compose_for(manifest: Manifest) -> Compose:
     """The compose project for `manifest`, rendered under `$PROOF_HOME/models`."""
-    file = render.write(manifest, paths.home() / "models")
-    return Compose(project=render.PROJECT, file=file, env_file=paths.secrets_file())
+    return appliance(render.PROJECT, render.write(manifest, paths.home() / "models"))
 
 
 @app.command()
@@ -84,7 +92,7 @@ def validate(
     as_json: bool = typer.Option(False, "--json", help="Print the manifest as JSON."),
 ) -> None:
     """Check the manifest and show what it declares."""
-    loaded = _load(manifest)
+    loaded = load_manifest(manifest)
     if as_json:
         out.print_json(loaded.model_dump_json())
         return
@@ -110,25 +118,14 @@ def validate(
 @app.command(name="render")
 def render_command(manifest: Path | None = ManifestOption) -> None:
     """Write the compose file the models would run with, and print its path."""
-    loaded = _load(manifest)
+    loaded = load_manifest(manifest)
     out.print(str(render.write(loaded, paths.home() / "models")))
 
 
-def _check_secrets(loaded: Manifest, models: list[ModelEntry]) -> None:
+def _check_secrets(models: list[ModelEntry]) -> None:
     gated = [model.name for model in models if model.gated]
-    if not gated:
-        return
-    try:
-        present = secrets.names(paths.secrets_file())
-    except secrets.SecretsFileExposed as error:
-        err.print(f"[fail]Refused.[/fail] {error}")
-        raise typer.Exit(2) from None
-    if "HF_TOKEN" not in present:
-        err.print(
-            f"[fail]Refused.[/fail] {gated} download gated weights and HF_TOKEN is not in "
-            f"{paths.secrets_file()}. Add it (the token must have accepted each model's license)."
-        )
-        raise typer.Exit(2)
+    if gated:
+        require({"HF_TOKEN"}, f"{gated}, which download gated weights,")
 
 
 def _check_memory(
@@ -205,15 +202,17 @@ def up(
     force: bool = typer.Option(False, "--force", help="Start even if memory looks short."),
 ) -> None:
     """Start the models one at a time, each after the previous is healthy."""
-    loaded = _load(manifest)
+    loaded = load_manifest(manifest)
     try:
         chosen = [loaded.named(name) for name in only] if only else list(loaded.models)
     except KeyError as error:
         err.print(f"[fail]{error.args[0]}[/fail]")
         raise typer.Exit(2) from None
-    _check_secrets(loaded, chosen)
+    _check_secrets(chosen)
     compose = compose_for(loaded)
     try:
+        if ensure_network(compose.runner, loaded.network):
+            err.print(f"[muted]Created the {loaded.network} network.[/muted]")
         states = compose.ps()
         running = frozenset(n for n, s in states.items() if s.state == "running")
         starting = frozenset(model.name for model in chosen)
@@ -235,7 +234,7 @@ def up(
 @app.command()
 def down(manifest: Path | None = ManifestOption) -> None:
     """Stop and remove the model containers. Downloaded weights stay in the cache."""
-    compose = compose_for(_load(manifest))
+    compose = compose_for(load_manifest(manifest))
     try:
         compose.down()
     except ComposeFailed as error:
@@ -261,7 +260,7 @@ def status(
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
 ) -> None:
     """Show each model's container state and health."""
-    loaded = _load(manifest)
+    loaded = load_manifest(manifest)
     try:
         states = compose_for(loaded).ps()
     except ComposeFailed as error:
@@ -294,7 +293,7 @@ def logs(
     tail: int = typer.Option(200, "--tail", help="How many lines."),
 ) -> None:
     """Print the last lines of one model's logs."""
-    loaded = _load(manifest)
+    loaded = load_manifest(manifest)
     try:
         loaded.named(name)
         text = compose_for(loaded).logs(name, tail=tail)

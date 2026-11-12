@@ -9,11 +9,12 @@ import httpx
 import typer
 from rich.table import Table
 
-from proof_headless import docker, paths, secrets
+from proof_headless import docker, paths
 from proof_headless.bundle import checks, loader
 from proof_headless.bundle import manifest as bundles
 from proof_headless.bundle.manifest import Bundle, BundleInvalid
 from proof_headless.console import err, out
+from proof_headless.secrets_commands import present
 
 app = typer.Typer(help="Validate and load a client bundle.", no_args_is_help=True)
 
@@ -27,12 +28,7 @@ def _bundle(directory: Path) -> Bundle:
 
 
 def _problems(bundle: Bundle) -> list[checks.Problem]:
-    try:
-        present = secrets.names(paths.secrets_file())
-    except secrets.SecretsFileExposed as error:
-        err.print(f"[fail]Refused.[/fail] {error}")
-        raise typer.Exit(2) from None
-    return checks.check(bundle, present)
+    return checks.check(bundle, present())
 
 
 def receipt_path(bundle: Bundle) -> Path:

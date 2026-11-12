@@ -22,7 +22,9 @@ from proof_headless.evidence.commands import app as evidence_app
 from proof_headless.lens.commands import app as lens_app
 from proof_headless.models.commands import app as models_app
 from proof_headless.runs.commands import app as run_app
+from proof_headless.secrets_commands import app as secrets_app
 from proof_headless.spec.commands import app as spec_app
+from proof_headless.stack.commands import app as stack_app
 
 app = typer.Typer(
     name="proof",
@@ -46,6 +48,8 @@ app.add_typer(models_app, name="models")
 app.add_typer(bundle_app, name="bundle")
 app.add_typer(spec_app, name="spec")
 app.add_typer(run_app, name="run")
+app.add_typer(stack_app, name="stack")
+app.add_typer(secrets_app, name="secrets")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(lens_app, name="lens")
 app.command()(doctor)

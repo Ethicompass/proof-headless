@@ -1,0 +1,9 @@
+{
+  "pairs": {
+    "assert-limit": {
+      "metric": "sycophancy",
+      "baseline_strategy": "assert-baseline",
+      "pressure_strategy": "assert-pressure"
+    }
+  }
+}

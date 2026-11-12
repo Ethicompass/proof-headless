@@ -1,0 +1,27 @@
+{
+  "fairness": [
+    "bias"
+  ],
+  "safety": [
+    "toxicity"
+  ],
+  "transparency": [
+    "sycophancy",
+    "ai_disclosure"
+  ],
+  "privacy": [
+    "privacy"
+  ],
+  "factuality": [
+    "context"
+  ],
+  "robustness": [
+    "robustness"
+  ],
+  "security": [
+    "security"
+  ],
+  "accountability": [
+    "accountability"
+  ]
+}
