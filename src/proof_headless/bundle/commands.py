@@ -84,7 +84,8 @@ def load_command(
     insecure: bool | None = typer.Option(
         None,
         "--insecure/--no-insecure",
-        help="Push brains over plain HTTP. Default: yes for a localhost or 127.0.0.1 registry.",
+        help="Push brains over plain HTTP. Default: yes for a localhost or 127.0.0.1 registry, "
+        "otherwise the brain's own vitruvio.toml decides.",
     ),
     skip_brains: bool = typer.Option(
         False, "--skip-brains", help="Do not push brains; keep the last receipt's digests."
@@ -98,7 +99,8 @@ def load_command(
             err.print(f"[fail]{problem.where}:[/fail] {problem.what}")
         err.print("Fix these with [b]proof bundle validate[/b] before loading.")
         raise typer.Exit(1)
-    plain = insecure if insecure is not None else registry.startswith(("localhost", "127.0.0.1"))
+    local = registry.startswith(("localhost", "127.0.0.1"))
+    plain = insecure if insecure is not None else (True if local else None)
     path = receipt_path(bundle)
     with httpx.Client(base_url=compute, timeout=120.0) as client, err.status("Loading") as status:
         receipt = loader.load(
