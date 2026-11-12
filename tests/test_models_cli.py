@@ -289,3 +289,20 @@ def test_up_creates_the_models_network_the_stack_shares_when_absent(fake: FakeCo
     result = runner.invoke(app, ["models", "up", *MANIFEST])
     assert result.exit_code == 0, result.output
     assert ["docker", "network", "create", "proof-models"] in fake.calls
+
+
+def test_status_reads_the_server_and_not_a_pull_running_beside_it(fake: FakeCompose) -> None:
+    fake.state["chat"] = {"Service": "chat", "State": "running", "Health": "healthy"}
+    fake.one_off_rows.append(
+        {
+            "Service": "chat",
+            "State": "running",
+            "Health": "unhealthy",
+            "ID": "id-chat-run",
+            "Labels": "com.docker.compose.oneoff=True",
+        }
+    )
+    result = runner.invoke(app, ["models", "status", *MANIFEST, "--json"])
+    assert result.exit_code == 0, result.output
+    rows = {row["name"]: row for row in json.loads(result.output)}
+    assert rows["chat"]["health"] == "healthy"

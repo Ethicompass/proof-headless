@@ -36,6 +36,8 @@ class FakeCompose:
     ports: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     missing_networks: set[str] = field(default_factory=set)
     """Networks `docker network inspect` does not find, until `docker network create` makes one."""
+    one_off_rows: list[dict[str, object]] = field(default_factory=list)
+    """Rows of one-off `run` containers `ps --all` also lists, as compose does."""
     state: dict[str, dict[str, object]] = field(default_factory=dict)
     polls: dict[str, int] = field(default_factory=dict)
     calls: list[list[str]] = field(default_factory=list)
@@ -59,27 +61,32 @@ class FakeCompose:
             started = [args[-1]] if not args[-1].startswith("-") else list(self.services)
             for service in started:
                 self._start(service)
-        elif command == "ps" and "--quiet" in args:
-            service = args[-1]
-            generation = self.generations.get(service, 0)
-            stdout = f"id-{service}-{generation}\n" if service in self.state else ""
         elif command == "ps":
-            for service, row in self.state.items():
-                if service in self.one_shots:
-                    continue
-                if service in self.crash_loops:
-                    self.restarts[service] = self.restarts.get(service, 0) + 1
-                    continue
-                if row["Health"] == "unhealthy" and self.unhealthy_polls.get(service):
-                    self.unhealthy_polls[service] -= 1
-                    if not self.unhealthy_polls[service]:
-                        row["Health"] = "healthy"
-                if row["Health"] == "starting":
-                    self.polls[service] += 1
-                    if self.polls[service] >= self.polls_to_healthy:
-                        late = service in self.fails or self.unhealthy_polls.get(service)
-                        row["Health"] = "unhealthy" if late else "healthy"
-            stdout = "\n".join(json.dumps(row) for row in self.state.values())
+            options = ("--format", "json", "--all")
+            asked = [a for a in args[args.index("ps") + 1 :] if a not in options]
+            if not asked:
+                for service, row in self.state.items():
+                    if service in self.one_shots:
+                        continue
+                    if service in self.crash_loops:
+                        self.restarts[service] = self.restarts.get(service, 0) + 1
+                        continue
+                    if row["Health"] == "unhealthy" and self.unhealthy_polls.get(service):
+                        self.unhealthy_polls[service] -= 1
+                        if not self.unhealthy_polls[service]:
+                            row["Health"] = "healthy"
+                    if row["Health"] == "starting":
+                        self.polls[service] += 1
+                        if self.polls[service] >= self.polls_to_healthy:
+                            late = service in self.fails or self.unhealthy_polls.get(service)
+                            row["Health"] = "unhealthy" if late else "healthy"
+            rows = [
+                {**row, "ID": f"id-{name}-{self.generations.get(name, 0)}"}
+                for name, row in self.state.items()
+            ] + self.one_off_rows
+            if asked:
+                rows = [row for row in rows if row["Service"] in asked]
+            stdout = "\n".join(json.dumps(row) for row in rows)
         elif command == "logs":
             stdout = "CUDA out of memory\n"
         elif command == "down":
