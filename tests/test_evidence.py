@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import subprocess
@@ -9,9 +10,11 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import pytest
+import zstandard
 from typer.testing import CliRunner
 
 from proof_headless import paths
@@ -38,12 +41,15 @@ class World:
     def __init__(self) -> None:
         self.objects = {
             "runs/r1/spec.json": b'{"run_id": "r1"}',
-            "runs/r1/traces/a1/0.jsonl.zst": b"\x28\xb5\x2f\xfd compressed",
+            "runs/r1/traces/a1/0.jsonl.zst": zstandard.compress(b'{"turn": "hello"}\n'),
             "runs/r1/dataset.json": b"[]",
+            "runs/r1/probes.json": json.dumps({"digest": "a" * 64, "count": 1}).encode(),
+            "blobs/" + "a" * 64: b'[{"probe": "p1"}]',
             "runs/r2/spec.json": b"{}",
         }
         self.manifest: dict[str, Any] = {"run_id": "r1", "target_declaration": DECLARATION}
         self.authorized: list[str] = []
+        self.lens_body: bytes | None = None
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         port, path = request.url.port, request.url.path
@@ -55,6 +61,8 @@ class World:
             return httpx.Response(404, json={"detail": "no run"})
         if port == 8090:
             if path == f"/projects/{PROJECT}/runs/r1":
+                if self.lens_body is not None:
+                    return httpx.Response(200, content=self.lens_body)
                 return httpx.Response(200, json={"stage": "done", "result_ref": RESULT})
             if path == f"/artifacts/{RESULT}":
                 return httpx.Response(200, json={"dimension_scores": {}})
@@ -149,6 +157,7 @@ def test_the_package_has_its_layout_and_verifies(world: World) -> None:
         "runs/r1/yield/store/spec.json",
         "runs/r1/yield/store/traces/a1/0.jsonl.zst",
         "runs/r1/yield/store/dataset.json",
+        "runs/r1/yield/probe-set.json",
         "runs/r1/lens/status.json",
         "runs/r1/lens/result.json",
     } <= names
@@ -156,7 +165,7 @@ def test_the_package_has_its_layout_and_verifies(world: World) -> None:
     index = json.loads((package_dir / "index.json").read_text())
     r1 = next(run for run in index["runs"] if run["run_id"] == "r1")
     assert r1["lens"] == {"project_id": PROJECT, "run_id": "r1", "result": RESULT}
-    assert r1["store_objects"] == 3
+    assert r1["store_objects"] == 4 and r1["probe_set"]
     gaps = {gap["what"] for gap in index["gaps"]}
     assert "appliance.lock" in gaps and "r2: Yield manifest" in gaps
     readme = (package_dir / "README.md").read_text()
@@ -212,8 +221,8 @@ def test_a_secret_written_json_escaped_is_caught(tmp_path: Path) -> None:
     root = tmp_path / "pkg"
     root.mkdir()
     (root / "a.json").write_text(json.dumps({"v": 'pa"ss/w\\rd'}))
-    leaks = package.scan(root, {"TOKEN": 'pa"ss/w\\rd', "OTHER": "absent"})
-    assert [(leak.path, leak.secret) for leak in leaks] == [("a.json", "TOKEN")]
+    found = package.scan(root, {"TOKEN": 'pa"ss/w\\rd', "OTHER": "absent-value"})
+    assert [(leak.path, leak.secret) for leak in found.leaks] == [("a.json", "TOKEN")]
 
 
 def test_without_store_credentials_the_traces_are_a_gap(world: World) -> None:
@@ -264,6 +273,10 @@ def test_requests_are_signed_as_botocore_signs_them() -> None:
     assert item["authorization"].endswith(
         "Signature=34124b71721bba163c20d8d8f6e3638c43fd12a76d3947b2fee2743114908d93"
     )
+    unusual = sign("GET", "http://127.0.0.1:9000/yield/runs/a b+c/x.json", {}, credentials, at)
+    assert unusual["authorization"].endswith(
+        "Signature=2186e22328b64d587b2b3ed7c4a1e1b0c89b5a32d9bba78929e04711ce6435a9"
+    )
 
 
 def test_credentials_never_show_in_their_repr() -> None:
@@ -274,3 +287,103 @@ def test_the_store_follows_continuation_tokens(world: World) -> None:
     with httpx.Client(transport=httpx.MockTransport(world.handler)) as http:
         store = Store(http, "http://127.0.0.1:9000", "yield", Credentials("a", "b"))
         assert list(store.keys("runs/r1/")) == sorted(k for k in world.objects if "r1" in k)
+
+
+def test_a_secret_inside_a_compressed_trace_refuses_the_package(world: World) -> None:
+    line = json.dumps({"turn": "x" * 70000 + f"the key is {TARGET_KEY}"}).encode()
+    world.objects["runs/r1/traces/a1/0.jsonl.zst"] = zstandard.compress(line)
+    result, package_dir = export()
+    assert result.exit_code == 1
+    flat = " ".join(result.output.split())
+    assert "runs/r1/yield/store/traces/a1/0.jsonl.zst holds the value of ACME_TARGET_KEY" in flat
+    assert TARGET_KEY not in result.output
+    assert not package_dir.exists()
+
+
+def test_a_trace_that_does_not_decompress_refuses_the_package(world: World) -> None:
+    world.objects["runs/r1/traces/a1/0.jsonl.zst"] = b"\x28\xb5\x2f\xfd not a frame"
+    result, package_dir = export()
+    assert result.exit_code == 1
+    assert "does not decompress" in " ".join(result.output.split())
+    assert not package_dir.exists()
+
+
+def test_a_value_split_across_read_chunks_is_found(tmp_path: Path) -> None:
+    root = tmp_path / "pkg"
+    root.mkdir()
+    value = "chunk-boundary-secret"
+    (root / "big.txt").write_bytes(b"x" * ((1 << 20) - 5) + value.encode())
+    assert [leak.secret for leak in package.scan(root, {"S": value}).leaks] == ["S"]
+
+
+@pytest.mark.parametrize("lead", [b"", b"a", b"ab"])
+@pytest.mark.parametrize("urlsafe", [False, True])
+@pytest.mark.parametrize("padded", [False, True])
+def test_a_base64_encoded_value_is_caught_at_every_alignment(
+    tmp_path: Path, lead: bytes, urlsafe: bool, padded: bool
+) -> None:
+    value = "u?s>e~r:p/a+s=s!w?d"
+    encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    encoded = encode(lead + value.encode() + b"z")
+    if not padded:
+        encoded = encoded.rstrip(b"=")
+    root = tmp_path / "pkg"
+    root.mkdir()
+    (root / "auth.log").write_bytes(b"Authorization: Basic " + encoded + b"\n")
+    assert [leak.secret for leak in package.scan(root, {"S": value}).leaks] == ["S"]
+
+
+def test_a_percent_encoded_value_is_caught(tmp_path: Path) -> None:
+    value = "tok/en+with=chars&more"
+    root = tmp_path / "pkg"
+    root.mkdir()
+    (root / "error.txt").write_text(f"GET /v1?key={quote(value, safe='')} failed")
+    assert [leak.secret for leak in package.scan(root, {"S": value}).leaks] == ["S"]
+
+
+def test_a_value_shorter_than_the_floor_is_named_and_not_matched(world: World) -> None:
+    paths.secrets_file().write_text(
+        f"YIELD_S3_ACCESS_KEY=yieldadmin-key\nYIELD_S3_SECRET_KEY={STORE_SECRET}\nSHORT=acme\n"
+    )
+    result, package_dir = export("--json")
+    assert result.exit_code == 0, result.output
+    assert "SHORT" in result.stderr and "not scanned" in result.stderr
+    assert json.loads(result.stdout)["unscanned_secrets"] == ["SHORT"]
+    assert package.verify(package_dir) == []
+
+
+def test_a_lens_answer_that_is_not_json_is_a_gap(world: World) -> None:
+    world.lens_body = b"<html>502 Bad Gateway</html>"
+    result, _ = export("--json")
+    assert result.exit_code == 0, result.output
+    gaps = {gap["what"]: gap["why"] for gap in json.loads(result.stdout)["gaps"]}
+    assert gaps["r1: Lens status"] == "answered something that is not JSON"
+
+
+def test_a_malformed_queue_refuses_the_export_as_proof_lens_does(world: World) -> None:
+    queue = paths.home() / "bundles" / "acme" / "queue.json"
+    queue.write_text(json.dumps({"runs": [{"run_id": "r1"}, {"phase": "done"}]}))
+    result, package_dir = export()
+    assert result.exit_code == 2
+    assert "has no run_id" in " ".join(result.output.split())
+    assert not package_dir.exists()
+
+
+def test_kill_records_from_proof_lens_are_carried(world: World) -> None:
+    kills = paths.home() / "bundles" / "acme" / "lens" / "kills"
+    kills.mkdir(parents=True)
+    (kills / "lens-run-r1-abcd1234-1.json").write_text('{"exit_code": 137}')
+    result, package_dir = export()
+    assert result.exit_code == 0, result.output
+    assert (package_dir / "lens" / "kills" / "lens-run-r1-abcd1234-1.json").is_file()
+
+
+def test_verify_refuses_absolute_paths_and_symlinks(world: World) -> None:
+    _, package_dir = export()
+    sums = package_dir / "SHA256SUMS"
+    sums.write_text(sums.read_text() + f"{'0' * 64}  /etc/passwd\n")
+    (package_dir / "link.json").symlink_to(package_dir / "index.json")
+    problems = {(p.path, p.problem) for p in package.verify(package_dir)}
+    assert ("link.json", "symlink") in problems
+    assert any(problem == "malformed" for _, problem in problems)
+    assert not any(path == "/etc/passwd" for path, _ in problems)
