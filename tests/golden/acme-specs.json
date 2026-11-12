@@ -134,6 +134,7 @@
       "max_target_calls": 120,
       "max_wall_seconds": 14400
     },
+    "webhook_url": "http://lens-api:8080/webhooks/yield",
     "target_declaration": "sha256:b13f637554d291cde05a3fd3927764c3cebcf0a3dfcc6adf15caaaa847528632"
   },
   "r2-returns": {
@@ -277,6 +278,7 @@
       "max_target_calls": 60,
       "max_wall_seconds": 14400
     },
+    "webhook_url": "http://lens-api:8080/webhooks/yield",
     "target_declaration": "sha256:b13f637554d291cde05a3fd3927764c3cebcf0a3dfcc6adf15caaaa847528632"
   }
 }

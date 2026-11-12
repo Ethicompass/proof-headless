@@ -303,3 +303,18 @@ def test_the_reranker_takes_the_full_rerank_url_and_no_extra_body(bundle_dir: Pa
     reranker = _specs(bundle_dir)["r2-returns"]["metrics"]["regulatory"]["reranker"]
     assert reranker["endpoint"] == "http://rerank:8000/v1/rerank"
     assert "extra_body" not in reranker
+
+
+def test_results_go_to_the_stack_s_lens_unless_the_matrix_says_otherwise(bundle_dir: Path) -> None:
+    from proof_headless.endpoints import LENS_WEBHOOK
+
+    _receipt(bundle_dir)
+    assert {spec["webhook_url"] for spec in _specs(bundle_dir).values()} == {LENS_WEBHOOK}
+    matrix = bundle_dir / "matrix.toml"
+    matrix.write_text(
+        matrix.read_text().replace(
+            "[defaults]\n", '[defaults]\nwebhook_url = "http://receiver:9000/hook"\n', 1
+        )
+    )
+    overridden = _specs(bundle_dir)
+    assert {spec["webhook_url"] for spec in overridden.values()} == {"http://receiver:9000/hook"}

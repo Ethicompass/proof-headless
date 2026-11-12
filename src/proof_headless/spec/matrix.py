@@ -139,6 +139,8 @@ class Overridable(BaseModel):
     """brain (a brain's name in the bundle) and registry (as the stack's containers reach it)."""
     budget: dict[str, Any] = Field(default_factory=dict)
     webhook_url: str | None = None
+    """Where Yield delivers the run's results. Unset is the stack's Lens receiver
+    (`endpoints.LENS_WEBHOOK`)."""
     metric_mapping: str | None = None
     """A mapping's name in the bundle, or Yield's own `default` when unset."""
     realism_prior: str | None = None

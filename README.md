@@ -26,7 +26,7 @@ uv run proof --help
 | `proof stack` | Brings up Yield, Lens and the brain registry from pinned images | planned (#4) |
 | `proof bundle` | Validates and loads a client bundle (see `examples/bundle-acme`) | available |
 | `proof spec render` | Renders Yield run specs from a bundle's run matrix and role bindings | available |
-| `proof run` | Queues, watches and re-measures a matrix of runs | planned (#7) |
+| `proof run` | Queues, watches and re-measures a matrix of runs | available |
 | `proof lens` | Makes sure every Yield run has its Lens result | available |
 | `proof evidence` | Exports a checksummed evidence package | available |
 
@@ -99,6 +99,53 @@ they are not looked for, and the export names those secrets on stderr and in `in
 
 Read commands take `--json`. Results go to standard output, and messages for the operator go to
 standard error.
+
+## Run the matrix
+
+`proof spec render` writes one spec per run to `$PROOF_HOME/bundles/<client>/specs/`, each
+delivering its results to the stack's Lens (`http://lens-api:8080/webhooks/yield`) unless the
+matrix sets `webhook_url`. `proof run` submits them to Yield and follows them until each one closes.
+
+```sh
+proof run queue <bundle>                  # two runs in flight at a time; --concurrency to change
+proof run queue <bundle> --only r1-disclosure
+proof run queue <bundle> --resume         # continue after a crash or a Ctrl-C
+proof run status <bundle> --json          # each run's place in the queue and in Yield
+proof run watch <bundle>                  # the dashboard; --plain over SSH, --json for one sample
+proof run remeasure <bundle> <run> --metric bias   # a failed run that holds its dataset
+```
+
+The queue asks Yield about a run before posting it: a run Yield closed or is measuring is never
+posted again, and anything else is posted with the bytes Yield first accepted, which Yield answers
+with 202 while a driver runs and relaunches when none does. A run Yield reads as failed is posted
+again (`--retries`, default 1) and keeps its slot until Yield shows the relaunched attempt. A run
+whose attack stops advancing for `--stall-minutes` is posted again up to twice, then closed as
+`stalled` so the queue ends. Each complete run is then followed to Lens: when its result has not
+appeared within `--lens-wait-minutes` (default 10), the queue launches Lens's job once, as
+`proof lens run` would (`--no-lens-follow` ends the queue at Yield). Its state is `queue.json` beside the specs, the accepted specs are
+kept in `submitted/`, and everything it did, including the anomalies it found, is appended to
+`events.jsonl`:
+
+| Anomaly | When |
+|---|---|
+| `stalled` | a run's phase and counts (or, while measuring, the measure's note) stop moving |
+| `liveness` | Yield reads the driver or the measure as `stalled` or `dead` |
+| `failed_traces` | the run's failed units grow |
+| `rate_limited`, `timeout`, `target_error` | new 429, timeout or target error lines in `yield-gen-<run>`, `yield-driver-<run>` or `yield-meas-<run>` |
+| `measure_idle` | a running measure has made no model call for six minutes |
+| `container_exited` | a job container exited non-zero, died or is restarting |
+| `model_down` | a model of the manifest is not running, or its health check fails |
+| `stack_down` | a service of the `proof-stack` project is not running or unhealthy, or a one-shot one exited non-zero |
+| `unreachable` | Yield, the docker daemon or the models project cannot be read |
+
+`proof run watch` shows the same, and only reads: it never posts, writes the queue or appends to
+its log.
+
+`proof run remeasure` measures a run Yield reads as failed and that has no manifest, such as one
+whose measure died on a rate limit. A complete run cannot be re-measured: Yield closes a run once
+and refuses a different result under the same key, so measuring differently needs a new run id.
+It also refuses while compute holds an earlier `measure-<run>` record, which would answer in place
+of the new request, and it never reports a job older than its own request.
 
 ## Develop
 
