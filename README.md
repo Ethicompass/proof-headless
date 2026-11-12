@@ -58,37 +58,48 @@ standard error.
 
 ## Run the matrix
 
-`proof spec render` writes one spec per run to `$PROOF_HOME/bundles/<client>/specs/`. `proof run`
-submits them to Yield and follows them until each one closes.
+`proof spec render` writes one spec per run to `$PROOF_HOME/bundles/<client>/specs/`, each
+delivering its results to the stack's Lens (`http://lens-api:8080/webhooks/yield`) unless the
+matrix sets `webhook_url`. `proof run` submits them to Yield and follows them until each one closes.
 
 ```sh
 proof run queue <bundle>                  # two runs in flight at a time; --concurrency to change
 proof run queue <bundle> --only r1-disclosure
 proof run queue <bundle> --resume         # continue after a crash or a Ctrl-C
 proof run status <bundle> --json          # each run's place in the queue and in Yield
-proof run watch <bundle>                  # the dashboard; --plain over SSH without a terminal
-proof run remeasure <bundle> <run> --metric bias
+proof run watch <bundle>                  # the dashboard; --plain over SSH, --json for one sample
+proof run remeasure <bundle> <run> --metric bias   # a failed run that holds its dataset
 ```
 
-The queue asks Yield about a run before posting it, so a run Yield already closed or is still
-running is never posted again. A run Yield reads as failed is posted again identically (`--retries`,
-default 1), which resumes it from what the store holds; a run whose attack stops advancing for
-`--stall-minutes` is posted again the same way. Its state is `queue.json` beside the specs, and
-everything it did, including the anomalies it found, is appended to `events.jsonl`:
+The queue asks Yield about a run before posting it: a run Yield closed or is measuring is never
+posted again, and anything else is posted with the bytes Yield first accepted, which Yield answers
+with 202 while a driver runs and relaunches when none does. A run Yield reads as failed is posted
+again (`--retries`, default 1) and keeps its slot until Yield shows the relaunched attempt. A run
+whose attack stops advancing for `--stall-minutes` is posted again up to twice, then closed as
+`stalled` so the queue ends. Its state is `queue.json` beside the specs, the accepted specs are
+kept in `submitted/`, and everything it did, including the anomalies it found, is appended to
+`events.jsonl`:
 
 | Anomaly | When |
 |---|---|
 | `stalled` | a run's phase and counts (or, while measuring, the measure's note) stop moving |
 | `liveness` | Yield reads the driver or the measure as `stalled` or `dead` |
 | `failed_traces` | the run's failed units grow |
-| `rate_limited`, `timeout`, `target_error` | new 429, timeout or target error lines in `yield-driver-<run>` or `yield-meas-<run>` |
+| `rate_limited`, `timeout`, `target_error` | new 429, timeout or target error lines in `yield-gen-<run>`, `yield-driver-<run>` or `yield-meas-<run>` |
 | `measure_idle` | a running measure has made no model call for six minutes |
 | `container_exited` | a job container exited non-zero, died or is restarting |
 | `model_down` | a model of the manifest is not running, or its health check fails |
+| `stack_down` | a service of the `proof-stack` project is not running or unhealthy, or a one-shot one exited non-zero |
 | `unreachable` | Yield, the docker daemon or the models project cannot be read |
 
 `proof run watch` shows the same, and only reads: it never posts, writes the queue or appends to
 its log.
+
+`proof run remeasure` measures a run Yield reads as failed and that has no manifest, such as one
+whose measure died on a rate limit. A complete run cannot be re-measured: Yield closes a run once
+and refuses a different result under the same key, so measuring differently needs a new run id.
+It also refuses while compute holds an earlier `measure-<run>` record, which would answer in place
+of the new request, and it never reports a job older than its own request.
 
 ## Develop
 

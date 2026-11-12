@@ -36,7 +36,7 @@ RUN_COLUMNS = ("run", "queue", "phase", "closed", "failed", "liveness", "note")
 
 
 class WatchApp(App[None]):
-    """Each run's phase and counts, the models' health and the anomaly feed, refreshed."""
+    """Each run's phase and counts, the models' and the stack's health and the anomaly feed."""
 
     TITLE = "proof run watch"
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -79,9 +79,10 @@ class WatchApp(App[None]):
     def show(self, board: Board) -> None:
         self.board = board
         models = self.query_one("#models", Static)
-        models.update(
-            themed(models_line(board.models)) if board.models is not None else "models: -"
-        )
+        lines = [models_line(board.models) if board.models is not None else "models: -"]
+        if board.stack is not None:
+            lines.append(models_line(board.stack, "stack"))
+        models.update(themed("\n".join(lines)))
         table = self.query_one("#runs", DataTable)
         table.clear()
         for row in board.runs:

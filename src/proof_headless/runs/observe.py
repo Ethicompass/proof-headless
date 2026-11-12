@@ -26,7 +26,13 @@ from proof_headless.runs.client import RunStatus, Unreachable, Yield
 
 DRIVER_PREFIX = "yield-driver-"
 MEASURE_PREFIX = "yield-meas-"
+GENERATE_PREFIX = "yield-gen-"
+ROLES = {DRIVER_PREFIX: "driver", MEASURE_PREFIX: "measure", GENERATE_PREFIX: "generate"}
+"""Yield's `JOB_PREFIX` per role: the driver attacks, compute's generation job builds the probes,
+the measure scores the dataset."""
 LOG_TAIL = 1000
+STACK_PROJECT = "proof-stack"
+"""The compose project `proof stack` brings up, whose services the observer watches."""
 
 
 @dataclass(frozen=True)
@@ -46,14 +52,29 @@ class Container:
 
     @property
     def role(self) -> str:
-        return "measure" if self.name.startswith(MEASURE_PREFIX) else "driver"
+        for prefix, role in ROLES.items():
+            if self.name.startswith(prefix):
+                return role
+        return "job"
 
     @property
     def run_id(self) -> str:
-        for prefix in (DRIVER_PREFIX, MEASURE_PREFIX):
+        for prefix in ROLES:
             if self.name.startswith(prefix):
                 return self.name[len(prefix) :]
         return self.name
+
+
+@dataclass(frozen=True)
+class Service:
+    """One container of the stack's compose project: Yield's API and compute, Lens, the stores,
+    the registry, and the one-shot jobs that seed them."""
+
+    service: str
+    state: str
+    health: str = ""
+    """`healthy`, `unhealthy`, `starting`, or empty without a health check."""
+    exit_code: int | None = None
 
 
 @dataclass(frozen=True)
@@ -70,10 +91,14 @@ class Observation:
     """Each declared model's container, `None` for one that has none. `None` as a whole when no
     models manifest is known."""
     models_error: str | None = None
+    stack: dict[str, Service] | None = None
+    """The stack's containers by service, `None` when the stack was not asked about."""
 
 
 _TIMESTAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)?\s?(.*)$")
 _EXITED = re.compile(r"Exited \((-?\d+)\)")
+_HEALTH = re.compile(r"\((healthy|unhealthy|health: starting)\)")
+_SERVICE_LABEL = re.compile(r"com\.docker\.compose\.service=([^,]+)")
 
 
 def parse_logs(output: str) -> list[LogLine]:
@@ -114,6 +139,28 @@ def parse_ps(output: str) -> dict[str, Container]:
     return found
 
 
+def parse_services(output: str) -> dict[str, Service]:
+    """`docker ps --format '{{json .}}'` of a compose project, as its containers by service."""
+    found: dict[str, Service] = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        named = _SERVICE_LABEL.search(str(row.get("Labels", "")))
+        service = named.group(1) if named else str(row.get("Names", "")).split(",")[0]
+        status = str(row.get("Status", ""))
+        exited = _EXITED.search(status)
+        health = _HEALTH.search(status)
+        found[service] = Service(
+            service=service,
+            state=str(row.get("State", "")),
+            health=(health.group(1).replace("health: ", "") if health else ""),
+            exit_code=int(exited.group(1)) if exited else None,
+        )
+    return found
+
+
 class DockerFailed(RuntimeError):
     """The docker CLI is missing or exited non-zero."""
 
@@ -138,6 +185,12 @@ class JobContainers:
             self._call("ps", "--all", "--filter", "label=yield.role", "--format", "{{json .}}")
         )
 
+    def stack(self, project: str) -> dict[str, Service]:
+        """Every container of the compose project `project`, running or not."""
+        label = f"label=com.docker.compose.project={project}"
+        listed = self._call("ps", "--all", "--filter", label, "--format", "{{json .}}")
+        return parse_services(listed)
+
     def logs(self, name: str, *, tail: int = LOG_TAIL) -> list[LogLine]:
         """The container's last lines, stdout and stderr together (Yield's jobs log to stderr)."""
         try:
@@ -161,6 +214,8 @@ class Observer:
     containers: JobContainers | None = None
     models: Compose | None = None
     model_names: tuple[str, ...] = ()
+    stack_project: str | None = None
+    """The stack's compose project, whose services are watched through `containers`."""
     now: Callable[[], datetime] = _now
 
     def statuses(self, run_ids: Iterable[str]) -> tuple[dict[str, RunStatus | None], str | None]:
@@ -184,9 +239,12 @@ class Observer:
             statuses, yield_error = self.statuses(wanted)
         containers: dict[str, Container] = {}
         logs: dict[str, list[LogLine]] = {}
+        stack: dict[str, Service] | None = None
         docker_error = None
         if self.containers is not None:
             try:
+                if self.stack_project is not None:
+                    stack = self.containers.stack(self.stack_project)
                 every = self.containers.find()
                 containers = {name: c for name, c in every.items() if c.run_id in wanted}
                 for name in containers:
@@ -210,4 +268,5 @@ class Observer:
             docker_error=docker_error,
             models=models,
             models_error=models_error,
+            stack=stack,
         )

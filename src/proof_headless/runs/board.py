@@ -51,6 +51,8 @@ class Board:
     runs: list[RunRow]
     models: dict[str, str] | None = None
     """Each model's `state/health`, `None` when no models manifest is known."""
+    stack: dict[str, str] | None = None
+    """Each stack service's `state/health`, `None` when the stack was not asked about."""
     anomalies: list[Anomaly] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
 
@@ -105,11 +107,19 @@ class Sampler:
         models = None
         if observation.models is not None:
             models = {name: _model(state) for name, state in observation.models.items()}
+        stack = None
+        if observation.stack is not None:
+            stack = {
+                name: f"{svc.state}/{svc.health or 'no check'}"
+                + (f" ({svc.exit_code})" if svc.exit_code is not None else "")
+                for name, svc in observation.stack.items()
+            }
         return Board(
             at=observation.at,
             client=self.client,
             runs=rows,
             models=models,
+            stack=stack,
             anomalies=anomalies,
             events=self._events(),
         )
@@ -143,12 +153,13 @@ def event_line(event: Event) -> str:
     )
 
 
-def models_line(models: dict[str, str]) -> str:
+def models_line(models: dict[str, str], label: str = "models") -> str:
     parts = []
     for name, state in models.items():
-        style = "ok" if state == "running/healthy" else "fail"
+        fine = state in ("running/healthy", "running/no check", "exited/no check (0)")
+        style = "ok" if fine else "fail"
         parts.append(f"{escape(name)} [{style}]{escape(state)}[/{style}]")
-    return "models: " + ", ".join(parts)
+    return f"{label}: " + (", ".join(parts) if parts else "no containers")
 
 
 def plain(board: Board, previous: Board | None) -> list[str]:
@@ -158,6 +169,8 @@ def plain(board: Board, previous: Board | None) -> list[str]:
     stamp = board.at.strftime("%H:%M:%S")
     if board.models is not None and (previous is None or previous.models != board.models):
         lines.append(f"{stamp} {models_line(board.models)}")
+    if board.stack is not None and (previous is None or previous.stack != board.stack):
+        lines.append(f"{stamp} {models_line(board.stack, 'stack')}")
     before = {row.run_id: row for row in previous.runs} if previous else {}
     for row in board.runs:
         if before.get(row.run_id) != row:

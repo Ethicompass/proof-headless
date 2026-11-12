@@ -19,8 +19,10 @@ from proof_headless.runs.observe import (
     JobContainers,
     LogLine,
     Observation,
+    Service,
     parse_logs,
     parse_ps,
+    parse_services,
 )
 from proof_headless.runs.state import Severity
 from tests.fake_yield import status
@@ -243,3 +245,60 @@ def test_job_containers_asks_docker_by_label_and_reads_both_streams() -> None:
     assert list(containers.find()) == ["yield-driver-r1"]
     assert [line.text for line in containers.logs("yield-driver-r1")] == ["out", "err"]
     assert "label=yield.role" in calls[0]
+
+
+@pytest.mark.parametrize(
+    ("service", "expected"),
+    [
+        (Service("yield-api", "running", "healthy"), None),
+        (Service("brain-registry", "running", ""), None),
+        (Service("yield-seed", "exited", exit_code=0), None),
+        (Service("lens-api", "running", "unhealthy"), "the health check fails"),
+        (Service("lens-api", "exited", exit_code=1), "is exited with code 1"),
+        (Service("yield-valkey", "restarting"), "is restarting"),
+    ],
+)
+def test_stack_down(service: Service, expected: str | None) -> None:
+    found = anomalies.stack_down(service)
+    assert (found.message if found else None) == expected
+
+
+def test_an_empty_stack_is_down_and_an_unasked_one_is_not() -> None:
+    assert anomalies.stack_empty({}) is not None
+    assert anomalies.stack_empty(None) is None
+
+
+def test_parse_services_reads_the_compose_service_and_health() -> None:
+    rows = [
+        {
+            "Names": "proof-stack-lens-api-1",
+            "Labels": "com.docker.compose.project=proof-stack,com.docker.compose.service=lens-api",
+            "State": "running",
+            "Status": "Up 5 minutes (unhealthy)",
+        },
+        {
+            "Names": "proof-stack-yield-seed-1",
+            "Labels": "com.docker.compose.service=yield-seed",
+            "State": "exited",
+            "Status": "Exited (0) 1 hour ago",
+        },
+    ]
+    found = parse_services("\n".join(json.dumps(r) for r in rows))
+    assert found["lens-api"] == Service("lens-api", "running", "unhealthy")
+    assert found["yield-seed"].exit_code == 0
+
+
+def test_a_generation_job_is_one_of_the_run_s_containers() -> None:
+    generate = Container("yield-gen-r1", "running")
+    assert (generate.role, generate.run_id) == ("generate", "r1")
+    (found,) = anomalies.log_problems(generate, [LogLine(NOW, "RateLimitError")])
+    assert "generate" in found.message
+
+
+def test_log_lines_older_than_the_detector_s_start_are_history() -> None:
+    detector = Detector(since=at(5))
+    lines = [LogLine(at(30), "RateLimitError"), LogLine(at(1), "RateLimitError")]
+    (found,) = detector.examine(
+        Observation(at=NOW, containers={DRIVER.name: DRIVER}, logs={DRIVER.name: lines})
+    )
+    assert found.tally == 1

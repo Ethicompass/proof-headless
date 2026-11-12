@@ -27,15 +27,18 @@ from proof_headless.bundle import manifest as bundles
 from proof_headless.bundle.manifest import BundleInvalid
 from proof_headless.console import err, out
 from proof_headless.docker import Compose
+from proof_headless.endpoints import YIELD_API, YIELD_COMPUTE
 from proof_headless.models import manifest as manifests
 from proof_headless.models import render
 from proof_headless.models.manifest import ManifestInvalid
 from proof_headless.runs import remeasure as remeasuring
+from proof_headless.runs.anomalies import Detector
 from proof_headless.runs.board import Board, Sampler, event_line, plain
 from proof_headless.runs.client import Unreachable, Yield, metric_outcomes
-from proof_headless.runs.observe import JobContainers, Observation, Observer
+from proof_headless.runs.observe import STACK_PROJECT, JobContainers, Observation, Observer
 from proof_headless.runs.queue import Policy, Queue, new_state, read_specs
 from proof_headless.runs.state import (
+    TERMINAL,
     Event,
     QueueBusy,
     QueueState,
@@ -49,11 +52,8 @@ from proof_headless.runs.state import (
 
 app = typer.Typer(help="Queue, watch and re-measure a bundle's runs.", no_args_is_help=True)
 
-API = "http://127.0.0.1:8080"
-COMPUTE = "http://127.0.0.1:8081"
-
-ApiOption = typer.Option(API, "--api", help="Yield's API on this appliance.")
-ComputeOption = typer.Option(COMPUTE, "--compute", help="Yield compute on this appliance.")
+ApiOption = typer.Option(YIELD_API, "--api", help="Yield's API on this appliance.")
+ComputeOption = typer.Option(YIELD_COMPUTE, "--compute", help="Yield compute on this appliance.")
 ManifestOption = typer.Option(
     None,
     "--manifest",
@@ -98,7 +98,13 @@ def _models(manifest: Path | None) -> tuple[Compose | None, tuple[str, ...]]:
 
 def _observer(client: Yield, manifest: Path | None) -> Observer:
     compose, names = _models(manifest)
-    return Observer(client=client, containers=JobContainers(), models=compose, model_names=names)
+    return Observer(
+        client=client,
+        containers=JobContainers(),
+        models=compose,
+        model_names=names,
+        stack_project=STACK_PROJECT,
+    )
 
 
 def _report(event: Event) -> None:
@@ -110,8 +116,8 @@ def _summary(state: QueueState) -> Table:
     for column in ("run", "queue", "phase", "closed", "failed", "metrics", "error"):
         table.add_column(column)
     for entry in state.runs:
-        style = {RunState.COMPLETE: "ok", RunState.FAILED: "fail", RunState.REFUSED: "fail"}.get(
-            entry.state, ""
+        style = {RunState.COMPLETE: "ok"}.get(
+            entry.state, "fail" if entry.state in TERMINAL else ""
         )
         table.add_row(
             f"[name]{escape(entry.run_id)}[/name]",
@@ -189,7 +195,7 @@ def queue_command(
         state=state,
         specs=specs,
         policy=policy,
-        observe=lambda ids, statuses: observer(ids, statuses),
+        observe=observer,
         report=_report,
     )
     try:
@@ -208,7 +214,7 @@ def queue_command(
         raise typer.Exit(1)
 
 
-def _row(board: Board) -> list[dict[str, Any]]:
+def _rows(board: Board) -> list[dict[str, Any]]:
     return [{**asdict(row), "counts": row.counts} for row in board.runs]
 
 
@@ -226,7 +232,7 @@ def status(
     """Show each run's place in the queue and in Yield."""
     client_name = _client_of(directory)
     store = Store(state_dir(client_name))
-    observer = Observer(client=_yield(api, COMPUTE))
+    observer = Observer(client=_yield(api, YIELD_COMPUTE))
     errors: list[str] = []
 
     def look(run_ids: list[str]) -> Observation:
@@ -248,7 +254,7 @@ def status(
                 {
                     "client": client_name,
                     "queue": recorded.model_dump(mode="json") if recorded else None,
-                    "runs": _row(board),
+                    "runs": _rows(board),
                     "yield_error": errors[0] if errors else None,
                 }
             )
@@ -295,6 +301,28 @@ def watch_plain(
         sleep(interval)
 
 
+def snapshot(board: Board) -> dict[str, Any]:
+    """One board as JSON: what `watch --json` prints."""
+    return {
+        "at": board.at.isoformat(),
+        "client": board.client,
+        "models": board.models,
+        "stack": board.stack,
+        "runs": _rows(board),
+        "anomalies": [
+            {
+                "kind": str(a.kind),
+                "severity": str(a.severity),
+                "subject": a.subject,
+                "run_id": a.run_id,
+                "message": a.message,
+            }
+            for a in board.anomalies
+        ],
+        "events": [event.model_dump(mode="json", exclude_none=True) for event in board.events],
+    }
+
+
 @app.command()
 def watch(
     directory: Path = typer.Argument(..., help="The bundle's directory."),
@@ -308,8 +336,12 @@ def watch(
     api: str = ApiOption,
     compute: str = ComputeOption,
     manifest: Path | None = ManifestOption,
+    as_json: bool = typer.Option(
+        False, "--json", help="Print one sample as JSON: the runs, the models and the anomalies."
+    ),
 ) -> None:
-    """Watch the runs, the models and the anomalies. Reads only; never changes anything."""
+    """Watch the runs, the models, the stack and the anomalies. Reads only; never changes
+    anything."""
     client_name = _client_of(directory)
     store = Store(state_dir(client_name))
     observer = _observer(_yield(api, compute), manifest)
@@ -317,8 +349,12 @@ def watch(
         store=store,
         client=client_name,
         run_ids=_rendered(client_name),
-        observe=lambda ids: observer(ids),
+        observe=observer,
+        detector=Detector(since=datetime.now(UTC)),
     )
+    if as_json:
+        out.print_json(json.dumps(snapshot(sampler.sample())))
+        return
     if plain_mode or not (sys.stdin.isatty() and sys.stdout.isatty()):
         try:
             watch_plain(sampler, interval, count=count)
@@ -330,17 +366,30 @@ def watch(
     WatchApp(sampler, interval).run()
 
 
+ENDINGS = {
+    remeasuring.Ending.FAILED: "the measure job failed",
+    remeasuring.Ending.DEAD: "the measure job stopped beating; its container is likely dead",
+    remeasuring.Ending.OLD_RECORD: "compute answered with an older job's record; this request "
+    "was dropped and nothing was measured for it",
+    remeasuring.Ending.MISSING: "compute never showed a job for the request",
+    remeasuring.Ending.TIMED_OUT: "the measure job did not end in time",
+}
+
+
 @app.command(name="remeasure")
 def remeasure_command(
     directory: Path = typer.Argument(..., help="The bundle's directory."),
-    run: str = typer.Argument(..., help="The run to re-measure."),
+    run: str = typer.Argument(..., help="The failed run to measure."),
     metric: list[str] = typer.Option(
-        [], "--metric", help="Re-measure only this metric (repeatable). Default: all of the run's."
+        [], "--metric", help="Measure only this metric (repeatable). Default: all of the run's."
     ),
     webhook_url: str | None = typer.Option(
         None, "--webhook-url", help="Where compute delivers the results. Default: the spec's."
     ),
     wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for the measure job to end."),
+    timeout_minutes: float = typer.Option(
+        240.0, "--timeout-minutes", min=1, help="How long --wait waits for the job."
+    ),
     poll_seconds: float = typer.Option(
         15.0, "--poll-seconds", min=1, help="Seconds between polls."
     ),
@@ -348,21 +397,23 @@ def remeasure_command(
     compute: str = ComputeOption,
     as_json: bool = typer.Option(False, "--json", help="Print the outcome as JSON."),
 ) -> None:
-    """Re-run measures for a run whose attack is over, without attacking again."""
+    """Measure a failed run's stored dataset again, without attacking again.
+
+    Only a run Yield reads as failed, with no manifest, and no measure record compute still
+    holds: a complete run's results cannot change (see `runs.remeasure`).
+    """
     client_name = _client_of(directory)
     path = specs_dir(client_name) / f"{run}.json"
     if not path.exists():
         raise _refuse(f"no rendered spec for {run} at {path}")
     spec = json.loads(path.read_text())
     client = _yield(api, compute)
+    job_id = remeasuring.job_id(run)
     try:
         current = client.status(run)
-        if current is None:
-            raise _refuse(f"Yield has no run {run}")
-        if current.phase not in remeasuring.REMEASURABLE:
-            raise _refuse(
-                f"{run} is {current.phase}; only a complete or failed run can be re-measured"
-            )
+        manifest = client.result(run) if current is not None else None
+        held = client.job(job_id) if current is not None else None
+        remeasuring.check(current, manifest, held)
         request = remeasuring.body(spec, metric, webhook_url=webhook_url)
     except remeasuring.Refused as error:
         raise _refuse(str(error)) from None
@@ -374,61 +425,81 @@ def remeasure_command(
             "[warn]No webhook:[/warn] the results stay in Yield's bucket, named by the manifest."
         )
     store = Store(state_dir(client_name))
+    posted_at = datetime.now(UTC)
     try:
-        job_id = client.measure(request)
+        answered = client.measure(request)
     except Unreachable as error:
         err.print(f"[fail]Compute refused the measurement.[/fail] {escape(str(error))}")
         raise typer.Exit(1) from None
     store.append(
         Event(
-            at=stamp(datetime.now(UTC)),
+            at=stamp(posted_at),
             kind="remeasure",
             run_id=run,
-            message=f"measuring {', '.join(request['metric_ids'])} as job {job_id}",
+            message=f"measuring {', '.join(request['metric_ids'])} as job {answered}",
         )
     )
-    err.print(f"Measuring [name]{escape(run)}[/name] as job {escape(job_id)}.")
-    outcome: dict[str, Any] = {"run_id": run, "job_id": job_id, "metric_ids": request["metric_ids"]}
-    if not wait:
-        if as_json:
-            out.print_json(json.dumps(outcome))
-        return
-    try:
-        with err.status("Measuring") as spinner:
-            job = remeasuring.wait(
-                client,
-                job_id,
-                poll_seconds=poll_seconds,
-                sleep=time.sleep,
-                progress=lambda j: spinner.update(
-                    f"Measuring: {escape(j.state)} {escape(j.detail)}"
+    err.print(f"Measuring [name]{escape(run)}[/name] as job {escape(answered)}.")
+    outcome: dict[str, Any] = {
+        "run_id": run,
+        "job_id": answered,
+        "metric_ids": request["metric_ids"],
+        "state": "launched",
+        "detail": "",
+        "metrics": {},
+    }
+    failed = False
+    if wait:
+        try:
+            with err.status("Measuring") as spinner:
+                waited = remeasuring.wait(
+                    client,
+                    answered,
+                    posted_at=posted_at,
+                    timeout=timedelta(minutes=timeout_minutes),
+                    poll_seconds=poll_seconds,
+                    sleep=time.sleep,
+                    progress=lambda j: spinner.update(
+                        f"Measuring: {escape(j.state)} {escape(j.detail)}"
+                    ),
+                )
+            manifest = client.result(run) or {}
+        except Unreachable as error:
+            err.print(f"[fail]Lost Yield while waiting.[/fail] {escape(str(error))}")
+            raise typer.Exit(1) from None
+        failed = waited.ending is not remeasuring.Ending.SUCCEEDED
+        metrics = {m: s for m, s in metric_outcomes(manifest).items() if m in request["metric_ids"]}
+        outcome.update(
+            {
+                "state": str(waited.ending),
+                "detail": ENDINGS.get(waited.ending, waited.job.detail if waited.job else ""),
+                "metrics": metrics if not failed else {},
+            }
+        )
+        store.append(
+            Event(
+                at=stamp(datetime.now(UTC)),
+                kind="remeasured",
+                severity=Severity.ERROR if failed else Severity.INFO,
+                run_id=run,
+                message=f"job {answered} {waited.ending}"
+                + (f": {outcome['detail']}" if failed else "")
+                + (
+                    " (" + ", ".join(f"{m} {s}" for m, s in metrics.items()) + ")"
+                    if metrics
+                    else ""
                 ),
             )
-        manifest = client.result(run) or {}
-    except Unreachable as error:
-        err.print(f"[fail]Lost Yield while waiting.[/fail] {escape(str(error))}")
-        raise typer.Exit(1) from None
-    state = job.state if job else "unknown"
-    metrics = {m: s for m, s in metric_outcomes(manifest).items() if m in request["metric_ids"]}
-    outcome.update({"state": state, "detail": job.detail if job else "", "metrics": metrics})
-    store.append(
-        Event(
-            at=stamp(datetime.now(UTC)),
-            kind="remeasured",
-            severity=Severity.INFO if state == "succeeded" else Severity.ERROR,
-            run_id=run,
-            message=f"job {job_id} {state}"
-            + (" (" + ", ".join(f"{m} {s}" for m, s in metrics.items()) + ")" if metrics else ""),
         )
-    )
     if as_json:
         out.print_json(json.dumps(outcome))
-    else:
-        table = Table(title=f"Re-measured {run}: {state}", title_justify="left")
+    elif wait:
+        table = Table(title=f"Measured {run}: {outcome['state']}", title_justify="left")
         table.add_column("metric")
         table.add_column("status")
         for name in request["metric_ids"]:
-            table.add_row(name, metrics.get(name, "-"))
+            table.add_row(name, outcome["metrics"].get(name, "-"))
         out.print(table)
-    if state != "succeeded":
+    if failed:
+        err.print(f"[fail]{escape(str(outcome['detail']))}[/fail]")
         raise typer.Exit(1)

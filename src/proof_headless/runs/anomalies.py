@@ -22,7 +22,7 @@ from enum import StrEnum
 
 from proof_headless.docker import ServiceState
 from proof_headless.runs.client import IN_FLIGHT, Phase, RunStatus
-from proof_headless.runs.observe import Container, LogLine, Observation
+from proof_headless.runs.observe import Container, LogLine, Observation, Service
 from proof_headless.runs.state import Severity
 
 STALL_AFTER = timedelta(minutes=15)
@@ -54,6 +54,7 @@ class Kind(StrEnum):
     MEASURE_IDLE = "measure_idle"
     CONTAINER_EXITED = "container_exited"
     MODEL_DOWN = "model_down"
+    STACK_DOWN = "stack_down"
     UNREACHABLE = "unreachable"
 
 
@@ -229,6 +230,30 @@ def model_down(name: str, state: ServiceState | None) -> Anomaly | None:
     return None
 
 
+def stack_down(service: Service) -> Anomaly | None:
+    """A service of the stack that is not running and healthy. A one-shot service (the seeds,
+    the bucket makers) that exited 0 did its job; one that exited otherwise did not, and a dead
+    `lens-api` silently loses every delivery."""
+    if service.state == "running":
+        if service.health == "unhealthy":
+            return Anomaly(
+                Kind.STACK_DOWN, Severity.ERROR, service.service, "the health check fails"
+            )
+        return None
+    if service.state == "exited" and service.exit_code == 0:
+        return None
+    if service.state == "created":
+        return None
+    detail = f" with code {service.exit_code}" if service.exit_code is not None else ""
+    return Anomaly(Kind.STACK_DOWN, Severity.ERROR, service.service, f"is {service.state}{detail}")
+
+
+def stack_empty(stack: dict[str, Service] | None) -> Anomaly | None:
+    if stack is None or stack:
+        return None
+    return Anomaly(Kind.STACK_DOWN, Severity.ERROR, "stack", "the stack has no containers")
+
+
 def unreachable(subject: str, error: str | None) -> Anomaly | None:
     if error is None:
         return None
@@ -246,6 +271,14 @@ class Detector:
     read_until: dict[str, datetime] = field(default_factory=dict)
     tallies: dict[str, int] = field(default_factory=dict)
     holding: set[str] = field(default_factory=set)
+    since: datetime | None = None
+    """Log lines at or before this moment are history, not news: a container first seen has its
+    tail read only past it. A queue starts it at its own start, a resumed one at its last look, a
+    watcher at its launch; the history is in the queue's event log. `None` reads every line."""
+
+    def forget(self, run_id: str) -> None:
+        """Measure the run's progress afresh, as after it was posted again."""
+        self.progress.pop(run_id, None)
 
     def seed(self, run_id: str, progress: str, since: datetime, failed: int) -> None:
         """Start from what a queue recorded, so a resumed queue neither forgets how long a run
@@ -254,10 +287,10 @@ class Detector:
         self.failed[run_id] = failed
 
     def _new_lines(self, name: str, lines: Sequence[LogLine]) -> list[LogLine]:
-        until = self.read_until.get(name)
+        until = self.read_until.get(name) or self.since
         stamped = [line.at for line in lines if line.at is not None]
         if stamped:
-            self.read_until[name] = max(stamped)
+            self.read_until[name] = max([*stamped, *([until] if until else [])])
         if until is None:
             return list(lines)
         return [line for line in lines if line.at is not None and line.at > until]
@@ -295,6 +328,8 @@ class Detector:
             down = model_down(model, state)
             if down is not None:
                 current.append(down)
+        stack = [stack_down(service) for service in (observation.stack or {}).values()]
+        current += [a for a in [*stack, stack_empty(observation.stack)] if a is not None]
         for subject, error in (
             ("yield", observation.yield_error),
             ("docker", observation.docker_error),
