@@ -26,7 +26,7 @@ On the appliance (DGX OS, aarch64, GB10 with 128 GB of unified memory):
 | Docker Compose v2.24 or later | `docker compose version` | v5 was measured on the appliance. |
 | NVIDIA container toolkit, or CDI | `docker run --rm --gpus all ubuntu nvidia-smi` | The model containers reserve the GPU through Compose's `driver: nvidia` device request. |
 | Python 3.12 | `python3 --version` | With `python3-venv`, to install `proof` in a venv. |
-| Disk | `df -h ~` | Estimated: about 60 GB of weights for the four models in `~/.cache/huggingface`, about 20 GB of images, plus traces and exports. Keep at least 150 GB free. |
+| Disk | `df -h ~`, `docker system df` | Measured with the four models and the stack: 62 GB of weights in `~/.cache/huggingface`, 26.9 GB of images (24.5 GB of them the vLLM 0.32.0 image), 1.6 GB of containers, a few MB in `$PROOF_HOME`: about 90 GB. Keep at least 200 GB free, for evidence exports and a second vLLM image during an upgrade. |
 | Outbound HTTPS | | To Hugging Face, ghcr.io, Docker Hub and PyPI. |
 
 Credentials, before the day:
@@ -212,9 +212,9 @@ proof stack pin --channel develop     # or --channel release
 writes `$PROOF_HOME/appliance.lock`. It refuses an image the appliance's platform (arm64) cannot
 run. `develop` follows Yield's and Lens's integration branches; `release` names the released
 versions. Review a change of the lock like a change of code: it decides which Yield and Lens
-measure the engagement. A run resumed after a failure replays its recorded grades only with
-`yield-driver` 0.1.11 or later, so check the driver version the channel names before an
-engagement with long runs (`--set yield-driver=<ref>` resolves one image from another reference).
+measure the engagement. A run resumed after a failure replays its recorded grades with
+`yield-driver` 0.1.11 or later, which both channels now pin (`release` names yield api 0.1.14,
+driver 0.1.11 and compute 0.1.15). `--set NAME=REF` resolves one image from another reference.
 
 ```sh
 proof stack up --bundle ~/src/proof-headless/examples/bundle-rehearsal
@@ -353,8 +353,8 @@ in sequence with reasoning on, at 22 to 41 s per grade.
 - Size each run's `budget.max_wall_seconds` in `matrix.toml` so the whole run fits in one
   attempt: count its conversations times about 40 s of grading each, plus the attack, with a
   margin. A run that outlives its budget fails and needs a resume.
-- A resume replays the recorded grades since yield driver 0.1.11; with an older driver it grades
-  every closed unit again, and a run that barely ran out can run out again.
+- A resume replays the recorded grades (yield driver 0.1.11 or later, on both channels), so it
+  does not grade closed units again.
 - The rehearsal's two runs (12 and 18 target calls) fit well inside their 3600 s budget.
 
 ## 10. Lens results
@@ -480,7 +480,8 @@ queue ended with the run failed, start a queue for that run alone, without rende
 proof run queue $B --only <run-id> --retries 2
 ```
 
-With yield driver 0.1.11 or later the resume replays the recorded grades and finishes quickly.
+The resume replays the recorded grades (yield driver 0.1.11, on both channels) and finishes
+quickly.
 A run that cannot fit its budget even so needs a new run id with a larger `max_wall_seconds`:
 add it to `matrix.toml`, then `proof spec render` and queue it.
 
