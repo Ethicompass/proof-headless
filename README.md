@@ -7,15 +7,10 @@ a client arrives in a bundle
 
 ## Install
 
-On the appliance, with a GitHub token that can read this repository (typed at the hidden prompt,
-so it stays out of the shell history and of `ps`):
+On the appliance:
 
 ```sh
-read -rsp 'GitHub token: ' GH_TOKEN && export GH_TOKEN && echo
-printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" \
-  | curl -fsSL -K - -H "Accept: application/vnd.github.raw" \
-    "https://api.github.com/repos/Ethicompass/proof-headless/contents/install.sh?ref=main" | sh
-unset GH_TOKEN
+curl -fsSL https://raw.githubusercontent.com/Ethicompass/proof-headless/main/install.sh | sh
 ```
 
 Or, with a copy of the repository already on the appliance: `sh install.sh`.
