@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.3](https://github.com/Ethicompass/proof-headless/compare/proof-headless-v0.1.2...proof-headless-v0.1.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **cli:** install without a token now that the repository is public ([e6bec71](https://github.com/Ethicompass/proof-headless/commit/e6bec71cdc51ab3de33def07b0620ee47ba613d9))
+* **stack:** release the 2026-11-13 channel as 0.1.3, install without a token ([52aa771](https://github.com/Ethicompass/proof-headless/commit/52aa771f87c9edc21b4f21180951a6de0a0cddb8))
+* **stack:** release the 2026-11-13 release channel ([0f6f69a](https://github.com/Ethicompass/proof-headless/commit/0f6f69ac8068a99b473c067871b72d8d6236d770))
+
 ## [0.1.2](https://github.com/Ethicompass/proof-headless/compare/proof-headless-v0.1.1...proof-headless-v0.1.2) (2026-11-13)
 
 
