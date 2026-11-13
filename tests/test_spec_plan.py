@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ runner = CliRunner()
 def _spec(run_id: str = "r1", **extra: Any) -> dict[str, Any]:
     return {
         "run_id": run_id,
-        "kb_ref": {"registry": "brain-registry:5000", "name": "acme"},
+        "kb_ref": {"registry": "brain-registry:5000", "repository": "acme", "digest": "sha256:b"},
         "kb_subjects": ["support"],
         "catalogues": ["acme-support"],
         "catalogue_versions": {"acme-support": 2},
@@ -58,7 +59,7 @@ class FakeCompute:
     polls: dict[str, int] = field(default_factory=dict)
 
     def _run_of(self, preview_id: str) -> str:
-        return next(run for run in self.sets if preview_id.startswith(f"plan-{run}-"))
+        return next(run for run in self.sets if preview_id.split("-", 2)[2] == run[:33])
 
     def _report(self, run: str) -> dict[str, Any]:
         return {
@@ -123,14 +124,15 @@ def test_the_preview_never_writes_under_the_run_s_own_id() -> None:
 
     (posted,) = fake.posted
     assert posted["run_id"] != "r1"
-    assert posted["run_id"].startswith("plan-r1-")
+    assert posted["run_id"].startswith("plan-")
+    assert posted["run_id"].endswith("-r1")
 
 
 def test_the_request_is_the_one_the_driver_sends() -> None:
     body = stage1_request(_spec(context={"language": "es"}))
 
     assert {k: v for k, v in body.items() if k != "run_id"} == {
-        "kb_ref": {"registry": "brain-registry:5000", "name": "acme"},
+        "kb_ref": {"registry": "brain-registry:5000", "repository": "acme", "digest": "sha256:b"},
         "kb_subjects": ["support"],
         "catalogues": ["acme-support"],
         "catalogue_versions": {"acme-support": 2},
@@ -149,6 +151,25 @@ def test_the_preview_id_changes_with_what_generation_reads_and_only_with_it() ->
     assert stage1_request(_spec(replicas=1, budget={}))["run_id"] == base
     assert stage1_request(_spec(kb_subjects=["billing"]))["run_id"] != base
     assert stage1_request(_spec(catalogue_versions={"acme-support": 3}))["run_id"] != base
+
+
+def test_a_preview_id_stays_within_yield_s_run_id_limit() -> None:
+    """Compute names the generation job after the id, and refuses a longer one with a bare 500."""
+    longest = "a" * 49 + "z"
+    near = "r-" + "x" * 31 + "-y"
+
+    for run_id in (longest, near):
+        preview = stage1_request(_spec(run_id))["run_id"]
+        assert len(preview) <= 50
+        assert re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?", preview)
+    assert (
+        stage1_request(_spec(longest))["run_id"]
+        != stage1_request(_spec(longest[:-1] + "q"))["run_id"]
+    ), "truncated ids stay apart through the digest"
+
+
+def test_fresh_asks_for_a_new_generation_of_the_same_request() -> None:
+    assert stage1_request(_spec(), "n1")["run_id"] != stage1_request(_spec())["run_id"]
 
 
 def test_a_set_already_generated_is_read_without_waiting() -> None:
@@ -198,7 +219,7 @@ def test_what_generation_could_not_do_is_said() -> None:
         {"r1": _probes(ask_a=40)},
         reports={
             "r1": {
-                "strategies_set_aside": ["ask-c"],
+                "strategies_set_aside": ["ask-b"],
                 "degenerate_strategies": ["ask-a"],
                 "unresolved_entities": {"contextual_sibling": ["x", "y"]},
                 "unverified_probes": ["p1"],
@@ -210,11 +231,32 @@ def test_what_generation_could_not_do_is_said() -> None:
 
     said = "\n".join(plan.warnings)
     assert "no probe for ['ask-b']" in said
-    assert "ask-c set aside" in said
+    assert "ask-b set aside" in said
     assert "ask-a produced only documented premises" in said
     assert "could not deform 2 entities" in said
     assert "1 probes whose doc label" in said
     assert "120 traces and a budget of 100 target calls" in said
+
+
+def test_a_set_aside_strategy_the_run_did_not_ask_for_is_not_reported() -> None:
+    fake = FakeCompute(
+        {"r1": _probes(ask_a=1, ask_b=1)},
+        reports={"r1": {"strategies_set_aside": ["unrelated", "ask-b"]}},
+    )
+
+    (plan,), _ = _planner(fake).plan({"r1": _spec(budget={})})
+
+    said = "\n".join(plan.warnings)
+    assert "ask-b set aside" in said
+    assert "unrelated" not in said
+
+
+def test_a_budget_with_little_room_over_the_traces_is_warned() -> None:
+    fake = FakeCompute({"r1": _probes(ask_a=10, ask_b=10)})
+
+    (plan,), _ = _planner(fake).plan({"r1": _spec(budget={"max_target_calls": 90})})
+
+    assert any("more than one call per trace" in w for w in plan.warnings)
 
 
 def test_the_command_plans_the_rendered_specs_and_totals_them(

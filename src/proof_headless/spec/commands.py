@@ -9,6 +9,7 @@ they pin versions and digests of one load on one appliance.
 from __future__ import annotations
 
 import json
+import secrets
 from pathlib import Path
 
 import httpx
@@ -121,6 +122,12 @@ def plan(
     timeout_minutes: float = typer.Option(
         30.0, "--timeout-minutes", min=1, help="How long to wait for all generations."
     ),
+    fresh: bool = typer.Option(
+        False,
+        "--fresh",
+        help="Generate again even when this request was planned before, such as after a new "
+        "contract version was published.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the plans as JSON."),
 ) -> None:
     """Count the probes and traces each rendered spec will produce, with Yield's own generation,
@@ -136,9 +143,11 @@ def plan(
     if not found:
         raise _refuse(f"no rendered specs in {specs_dir(client_name)}; run proof spec render first")
     specs = {run: json.loads(path.read_text()) for run, path in found.items()}
-    planner = Planner(_compute_client(compute), timeout_seconds=timeout_minutes * 60)
-    with err.status(f"Generating {len(specs)} probe sets in Yield compute"):
-        plans, failed = planner.plan(specs)
+    nonce = secrets.token_hex(8) if fresh else ""
+    with _compute_client(compute) as client:
+        planner = Planner(client, timeout_seconds=timeout_minutes * 60, nonce=nonce)
+        with err.status(f"Generating {len(specs)} probe sets in Yield compute"):
+            plans, failed = planner.plan(specs)
     if as_json:
         out.print_json(
             json.dumps(

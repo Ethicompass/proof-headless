@@ -155,16 +155,21 @@ matrix sets `webhook_url`. `proof run` submits them to Yield and follows them un
 produce, per strategy, and how many traces that makes with its replicas. The count is Yield's own:
 it asks compute to run each spec's generation (stage 1), which reads the brain and the catalogue
 and never touches the target, and counts the probe set it writes. Each runs under a preview id,
-`plan-<run>-<12 hex of the request>`, so the run's own stage-1 record stays unwritten and the run
-generates its set again when it starts (generation is deterministic, so it is the same set).
-Planning again with nothing changed answers from the preview's record at once. It warns about a
-strategy that produced no probe, one set aside for the run's shape, entities a construction could
-not deform, unverified probes, and traces above the run's `max_target_calls`. A spec whose
-generation fails is reported with compute's reason, and the command exits 1. The Exploiter's
-traces are not counted: it decides them during the run, within the same budget.
+`plan-<12 hex>-<run>`, so the run's own stage-1 record stays unwritten and the run generates its
+set again when it starts. The count is the same then (one probe per strategy and entity); the
+wording may differ where a generator model writes premises. Planning the same request again
+answers from the preview's record at once; `--fresh` generates again, which is what to do after a
+new contract version is published, since a spec that names none is generated against the newest.
+It warns about a strategy of the run that produced no probe or was set aside for the run's shape,
+entities a construction could not deform, unverified probes, and a `max_target_calls` below the
+traces or under twice them (a retry or a conducted conversation spends more than one call per
+trace). A spec whose generation fails is reported with compute's reason, and the command exits 1.
+The Exploiter's traces are not counted: it decides them during the run, within the same budget.
+Each generated preview leaves an exited `yield-gen-plan-...` container, which
+`docker ps -aq --filter "name=yield-gen-plan-" | xargs -r docker rm` removes.
 
 ```sh
-proof spec plan <bundle>                  # --only <run> for some; --json for the numbers
+proof spec plan <bundle>                  # --only <run>, --fresh, --json
 ```
 
 ```sh

@@ -305,7 +305,7 @@ and prints, per run, the probes by strategy, the replicas, the traces and the bu
 `max_target_calls`, with totals. Adjust `matrix.toml` (subjects, strategies, replicas, budget) and
 render again until the totals are what the engagement wants. Generation that needs the generator
 model costs one batched call per entity kind; the rest is reading the brain. A run it cannot plan
-is reported with compute's reason, which is the same failure the run would hit at its start.
+is reported with compute's reason, which is the failure the run would hit when it generates.
 
 ## 9. Run the matrix
 

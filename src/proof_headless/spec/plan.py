@@ -6,10 +6,13 @@ writes the probe set, and it never touches the target. Counting entities per sub
 by hand, as the last engagement did, misses what generation does to them: strategies set aside for
 the run's shape, entities a construction could not deform, and duplicates the library merges.
 
-Each spec is planned under its own preview run id, `plan-<run>-<digest of the request>`, so the
-real run's stage-1 record stays unwritten and the run generates its own set when it starts
-(generation is deterministic, so it is the same set). Planning a spec again with nothing changed
-answers from the preview's record at once; a change to anything generation reads gives a new id.
+Each spec is planned under its own preview run id, `plan-<12 hex>-<run>`, so the real run's
+stage-1 record stays unwritten and the run generates its own set when it starts. The count is the
+same then: one probe per strategy and entity, and an entity a construction cannot deform still
+becomes a probe. The words may not be, when a generator model writes premises. Planning a spec
+again with the same request answers from the preview's record at once. A spec that names no
+`contract_version` is generated against the newest contract, which the request does not show, so
+`fresh` asks for a new generation regardless.
 """
 
 from __future__ import annotations
@@ -26,27 +29,21 @@ import httpx
 
 PREVIEW_PREFIX = "plan-"
 
-GENERATION_FIELDS = (
-    "kb_ref",
-    "kb_subjects",
-    "catalogues",
-    "catalogue_versions",
-    "plugins",
-    "strategies",
-    "context",
-    "generator",
-    "contract_name",
-    "contract_version",
-)
-"""What a spec says about generation: exactly what Yield's driver sends to `/stage1`."""
+RUN_ID_MAX = 50
+"""Yield's run id limit, which a preview id has to meet too: compute names the generation job after
+it and refuses a longer one with a bare 500."""
 
 
 class PlanFailed(RuntimeError):
     """Compute could not plan a spec: it refused the request, the job failed, or it timed out."""
 
 
-def stage1_request(spec: Mapping[str, Any]) -> dict[str, Any]:
-    """The `/stage1` body Yield's driver would send for `spec`, under a preview run id."""
+def stage1_request(spec: Mapping[str, Any], nonce: str = "") -> dict[str, Any]:
+    """The `/stage1` body Yield's driver would send for `spec`, under a preview run id.
+
+    The id's digest covers the run id, the body and `nonce`, so two runs never share a preview and
+    a new nonce forces a new generation. The run id is truncated to keep the whole within Yield's
+    limit; the digest keeps truncated ids apart."""
     body: dict[str, Any] = {
         "kb_ref": spec.get("kb_ref"),
         "kb_subjects": list(spec.get("kb_subjects") or []),
@@ -59,9 +56,12 @@ def stage1_request(spec: Mapping[str, Any]) -> dict[str, Any]:
         "contract_name": spec.get("contract_name") or "pi",
         "contract_version": spec.get("contract_version"),
     }
-    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    identity = {"run_id": spec["run_id"], "body": body, "nonce": nonce}
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:12]
-    return {"run_id": f"{PREVIEW_PREFIX}{spec['run_id']}-{digest}", **body}
+    head = f"{PREVIEW_PREFIX}{digest}-"
+    tail = str(spec["run_id"])[: RUN_ID_MAX - len(head)].rstrip("-")
+    return {"run_id": head + tail, **body}
 
 
 @dataclass(frozen=True)
@@ -73,10 +73,6 @@ class Plan:
     probes_by_strategy: dict[str, int]
     replicas: int
     max_target_calls: int | None
-    degenerate: tuple[str, ...] = ()
-    set_aside: tuple[str, ...] = ()
-    unresolved: int = 0
-    unverified: int = 0
     warnings: tuple[str, ...] = field(default=())
 
     @property
@@ -103,7 +99,8 @@ def _warnings(
     if empty:
         said.append(f"{run_id}: no probe for {empty}")
     for name in report.get("strategies_set_aside") or []:
-        said.append(f"{run_id}: {name} set aside for this run's shape")
+        if not strategies or name in strategies:
+            said.append(f"{run_id}: {name} set aside for this run's shape")
     for name in report.get("degenerate_strategies") or []:
         said.append(f"{run_id}: {name} produced only documented premises")
     unresolved = report.get("unresolved_entities") or {}
@@ -116,6 +113,11 @@ def _warnings(
         said.append(
             f"{run_id}: {traces} traces and a budget of {max_calls} target calls; "
             f"the run stops before it attacks every probe"
+        )
+    elif max_calls is not None and traces * 2 > max_calls:
+        said.append(
+            f"{run_id}: {traces} traces against a budget of {max_calls} target calls; a "
+            f"retry or a conducted conversation spends more than one call per trace"
         )
     return tuple(said)
 
@@ -131,8 +133,10 @@ class Planner:
         timeout_seconds: float = 1800.0,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        nonce: str = "",
     ) -> None:
         self.compute = compute
+        self.nonce = nonce
         self.poll_seconds = poll_seconds
         self.timeout_seconds = timeout_seconds
         self.sleep = sleep
@@ -151,11 +155,12 @@ class Planner:
             raise PlanFailed(f"{path} answered {response.status_code}: {str(detail)[:500]}")
         return response.json()
 
-    def launch(self, spec: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
-        """Ask compute to generate `spec`'s set; the job id and the report when already closed."""
-        request = stage1_request(spec)
+    def launch(self, spec: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
+        """Ask compute to generate `spec`'s set: the preview id, the job id, and the report when
+        the preview's set was already generated."""
+        request = stage1_request(spec, self.nonce)
         accepted = self._call("POST", "/stage1", json=request)
-        return str(accepted["job_id"]), dict(accepted.get("report") or {})
+        return request["run_id"], str(accepted["job_id"]), dict(accepted.get("report") or {})
 
     def wait(self, job_id: str, started: float) -> dict[str, Any]:
         """The job's report once it succeeded."""
@@ -169,7 +174,7 @@ class Planner:
                 raise PlanFailed(f"{job_id} did not finish in {self.timeout_seconds:.0f} s")
             self.sleep(self.poll_seconds)
 
-    def finish(self, spec: Mapping[str, Any], report: Mapping[str, Any]) -> Plan:
+    def finish(self, spec: Mapping[str, Any], preview_id: str, report: Mapping[str, Any]) -> Plan:
         """Read the probe set the report names and count it by strategy."""
         probes = self._call("GET", f"/probes/{report['probes_digest']}")
         by_strategy = dict(sorted(Counter(str(p.get("strategy")) for p in probes).items()))
@@ -181,14 +186,10 @@ class Planner:
         traces = sum(by_strategy.values()) * replicas
         return Plan(
             run_id=str(spec["run_id"]),
-            preview_id=stage1_request(spec)["run_id"],
+            preview_id=preview_id,
             probes_by_strategy=by_strategy,
             replicas=replicas,
             max_target_calls=max_calls,
-            degenerate=tuple(report.get("degenerate_strategies") or ()),
-            set_aside=tuple(report.get("strategies_set_aside") or ()),
-            unresolved=sum(len(v) for v in (report.get("unresolved_entities") or {}).values()),
-            unverified=len(report.get("unverified_probes") or ()),
             warnings=_warnings(
                 str(spec["run_id"]), strategies, by_strategy, report, traces, max_calls
             ),
@@ -198,7 +199,7 @@ class Planner:
         """Plan every spec: all generations are launched first, then awaited, so compute runs them
         side by side. Returns the plans and, per run, why one could not be planned."""
         started = self.clock()
-        launched: dict[str, tuple[str, dict[str, Any]]] = {}
+        launched: dict[str, tuple[str, str, dict[str, Any]]] = {}
         failed: dict[str, str] = {}
         for run_id, spec in specs.items():
             try:
@@ -206,10 +207,10 @@ class Planner:
             except PlanFailed as error:
                 failed[run_id] = str(error)
         plans: list[Plan] = []
-        for run_id, (job_id, report) in launched.items():
+        for run_id, (preview_id, job_id, report) in launched.items():
             try:
                 closed = report or self.wait(job_id, started)
-                plans.append(self.finish(specs[run_id], closed))
+                plans.append(self.finish(specs[run_id], preview_id, closed))
             except PlanFailed as error:
                 failed[run_id] = str(error)
         return plans, failed
