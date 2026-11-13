@@ -7,20 +7,24 @@ a client arrives in a bundle
 
 ## Install
 
-On the appliance, with a GitHub token that can read this repository:
+On the appliance, with a GitHub token that can read this repository (typed at the hidden prompt,
+so it stays out of the shell history and of `ps`):
 
 ```sh
-export GH_TOKEN=<token>
-curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/Ethicompass/proof-headless/contents/install.sh?ref=main" | sh
+read -rsp 'GitHub token: ' GH_TOKEN && export GH_TOKEN && echo
+printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" \
+  | curl -fsSL -K - -H "Accept: application/vnd.github.raw" \
+    "https://api.github.com/repos/Ethicompass/proof-headless/contents/install.sh?ref=main" | sh
+unset GH_TOKEN
 ```
 
 Or, with a copy of the repository already on the appliance: `sh install.sh`.
 
 The script installs [uv](https://docs.astral.sh/uv/) if missing and `proof` in `~/.local/bin`,
-leaves the source in `~/src/proof-headless`, copies the DGX Spark models manifest to
-`~/.proof/models.yaml` and creates `~/.config/proof/secrets.env` (mode 600). Run it again to
-upgrade; it keeps the manifest and the secrets. `PROOF_VERSION=<tag>` installs a given release.
+copies the DGX Spark models manifest to `~/.proof/models.yaml` and creates
+`~/.config/proof/secrets.env` (mode 600). Downloaded, the source lands in `~/src/proof-headless`,
+with the manifests and the example bundles. Run it again to upgrade; it keeps the manifest and the
+secrets. `PROOF_VERSION=<tag>` installs a given release.
 
 ## Use
 
@@ -39,12 +43,13 @@ proof evidence export <client>                       # the checksummed evidence 
 
 | Command | What it does |
 |---|---|
+| `proof version` | Versions of proof and the host |
 | `proof models` | Serves the models of a manifest with vLLM, within a memory budget |
 | `proof doctor` | Probes every model the way runs use it, and the stack with `--stack` |
 | `proof stack` | Brings up Yield, Lens and the brain registry from pinned images |
 | `proof secrets` | Sets a credential in the secrets file; lists names, never values |
-| `proof bundle` | Validates and loads a client bundle (see `examples/`) |
-| `proof spec render` | Renders Yield run specs from a bundle's run matrix |
+| `proof bundle` | Validates and loads a client bundle (see `examples/bundle-acme`) |
+| `proof spec render` | Renders Yield run specs from a bundle's run matrix and role bindings |
 | `proof run` | Queues, watches and re-measures the runs |
 | `proof lens` | Makes sure every Yield run has its Lens result |
 | `proof evidence` | Exports and verifies the evidence package |
@@ -66,5 +71,5 @@ uv run mypy
 uv run pytest -q -m "not appliance"
 ```
 
-Tests marked `appliance` need the real host. See [CONTRIBUTING.md](CONTRIBUTING.md) for branches,
+Tests marked `appliance` need the real host: a GPU, a docker daemon and served models. See [CONTRIBUTING.md](CONTRIBUTING.md) for branches,
 commits and releases.
