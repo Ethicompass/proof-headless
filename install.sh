@@ -1,8 +1,8 @@
 #!/bin/sh
 # Install proof on an appliance.
 #
+#   curl -fsSL https://raw.githubusercontent.com/Ethicompass/proof-headless/main/install.sh | sh
 #   sh install.sh                      from a copy of this repository
-#   curl ... | sh                      straight from GitHub, with GH_TOKEN exported (see README.md)
 #
 # It installs uv when missing, installs proof with `uv tool install` (its own Python 3.12 and
 # environment, `proof` in ~/.local/bin), and prepares ~/.proof and the secrets file. Downloaded,
@@ -11,8 +11,8 @@
 #
 # Environment:
 #   PROOF_VERSION       release tag to install (default: the latest release); a branch works too
-#   GH_TOKEN            a GitHub token that can read Ethicompass/proof-headless, needed only
-#                       without a local copy; handed to curl on stdin, never written to disk
+#   GH_TOKEN            optional GitHub token, for a host that hits GitHub's anonymous rate
+#                       limit; handed to curl on stdin, never written to disk
 #   PROOF_MANIFEST      the manifest under manifests/ copied to $PROOF_HOME/models.yaml
 #                       (default dgx-spark)
 #   PROOF_HOME          default ~/.proof
@@ -33,18 +33,21 @@ warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 github() {
-    printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" | curl -fsSL -K - "$@"
+    if [ -n "${GH_TOKEN:-}" ]; then
+        printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" | curl -fsSL -K - "$@"
+    else
+        curl -fsSL "$@"
+    fi
 }
 
 download() {
-    [ -n "${GH_TOKEN:-}" ] || die "no local copy of proof-headless here, and GH_TOKEN is not set to download one"
     command -v curl >/dev/null || die "curl is required"
     api="https://api.github.com/repos/$REPO"
     version="${PROOF_VERSION:-}"
     if [ -z "$version" ]; then
         version=$(github "$api/releases/latest" \
             | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
-        [ -n "$version" ] || die "could not read the latest release of $REPO; does GH_TOKEN have access?"
+        [ -n "$version" ] || die "could not read the latest release of $REPO"
     fi
     say "Downloading $REPO $version"
     rm -rf "$SRC.new"
