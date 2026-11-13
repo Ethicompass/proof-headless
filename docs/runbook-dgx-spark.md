@@ -218,7 +218,9 @@ run. `develop` follows Yield's and Lens's integration branches; `release` names 
 versions. Review a change of the lock like a change of code: it decides which Yield and Lens
 measure the engagement. A run resumed after a failure replays its recorded grades with
 `yield-driver` 0.1.11 or later, which both channels now pin (`release` names yield api 0.1.14,
-driver 0.1.11 and compute 0.1.15). `--set NAME=REF` resolves one image from another reference.
+driver 0.1.12 and compute 0.1.16, lens api 0.1.11 and run 0.1.13). Compute 0.1.16 reads a
+reasoning metric judge's label from its answer (yield #168). `--set NAME=REF` resolves one image
+from another reference.
 
 ```sh
 proof stack up --bundle ~/src/proof-headless/examples/bundle-rehearsal
