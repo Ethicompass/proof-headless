@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.4](https://github.com/Ethicompass/proof-headless/compare/proof-headless-v0.1.3...proof-headless-v0.1.4) (2026-11-13)
+
+
+### Features
+
+* **runs:** proof spec plan counts each spec's probes and traces ([85498f2](https://github.com/Ethicompass/proof-headless/commit/85498f29671b13855de1028e95752be6cea66c86))
+* **runs:** proof spec plan counts each spec's probes and traces with Yield's own generation ([c86662b](https://github.com/Ethicompass/proof-headless/commit/c86662b21b2767f1e5a449bd0970bfffd0464f23))
+
+
+### Bug Fixes
+
+* **runs:** a plugin-narrowed run hears set-aside strategies as the catalogue's ([2473793](https://github.com/Ethicompass/proof-headless/commit/2473793e1efd75ae4408918b75558c87679c9d01))
+* **runs:** keep preview ids within Yield's limit, --fresh, warnings about the run's own strategies and a tight budget ([130d2e9](https://github.com/Ethicompass/proof-headless/commit/130d2e93a5b4ed58b1e5e881428919c7fdf60839))
+
 ## [0.1.3](https://github.com/Ethicompass/proof-headless/compare/proof-headless-v0.1.2...proof-headless-v0.1.3) (2026-11-13)
 
 
