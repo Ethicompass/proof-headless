@@ -99,8 +99,13 @@ def _warnings(
     if empty:
         said.append(f"{run_id}: no probe for {empty}")
     for name in report.get("strategies_set_aside") or []:
-        if not strategies or name in strategies:
+        if name in strategies:
             said.append(f"{run_id}: {name} set aside for this run's shape")
+        elif not strategies:
+            said.append(
+                f"{run_id}: {name} of the catalogue set aside for this run's shape "
+                f"(compute lists the whole catalogue; it may not belong to this run's plugins)"
+            )
     for name in report.get("degenerate_strategies") or []:
         said.append(f"{run_id}: {name} produced only documented premises")
     unresolved = report.get("unresolved_entities") or {}

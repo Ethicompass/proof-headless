@@ -251,6 +251,16 @@ def test_a_set_aside_strategy_the_run_did_not_ask_for_is_not_reported() -> None:
     assert "unrelated" not in said
 
 
+def test_a_run_narrowed_by_plugins_hears_set_asides_as_the_catalogue_s() -> None:
+    fake = FakeCompute(
+        {"r1": _probes(ask_a=1)}, reports={"r1": {"strategies_set_aside": ["other-plugin-x"]}}
+    )
+
+    (plan,), _ = _planner(fake).plan({"r1": _spec(strategies=[], plugins=["leak"], budget={})})
+
+    assert any("other-plugin-x of the catalogue" in w for w in plan.warnings)
+
+
 def test_a_budget_with_little_room_over_the_traces_is_warned() -> None:
     fake = FakeCompute({"r1": _probes(ask_a=10, ask_b=10)})
 
