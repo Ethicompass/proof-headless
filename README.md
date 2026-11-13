@@ -71,5 +71,5 @@ uv run mypy
 uv run pytest -q -m "not appliance"
 ```
 
-Tests marked `appliance` need the real host: a GPU, a docker daemon and served models. See [CONTRIBUTING.md](CONTRIBUTING.md) for branches,
-commits and releases.
+Tests marked `appliance` need the real host: a GPU, a docker daemon and served models. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for branches, commits and releases.

@@ -68,10 +68,10 @@ the shell history nor the process list.
 The script downloads the latest release (`PROOF_VERSION=<tag>` for another) into
 `~/src/proof-headless`, installs uv if missing and `proof` with `uv tool install` (its own Python
 3.12; `proof` lands in `~/.local/bin`), copies `manifests/dgx-spark/models.yaml` to
-`~/.proof/models.yaml` and creates an empty `~/.config/proof/secrets.env` at mode 600. It writes
-no token to disk or to a command line. Running it again upgrades `proof` and leaves the manifest and the secrets as
-they are. Without a token on the appliance, copy the repository over from a workstation and run
-`sh ~/src/proof-headless/install.sh`:
+`~/.proof/models.yaml` and creates an empty `~/.config/proof/secrets.env` at mode 600. It writes no
+token to disk or to a command line. Running it again upgrades `proof` and leaves the manifest and
+the secrets as they are. Without a token on the appliance, copy the repository over from a
+workstation and run `sh ~/src/proof-headless/install.sh`:
 
 ```sh
 git archive --format=tar.gz --prefix=proof-headless/ <tag> \
