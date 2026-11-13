@@ -5,6 +5,9 @@ and Lens, loads a client's bundle, runs the engagement and exports its evidence.
 is generic, and everything about a client arrives in a bundle (see
 [ADR 0001](docs/adr/0001-the-appliance-is-generic-a-client-is-a-bundle.md)).
 
+To run an engagement on an NVIDIA DGX Spark, from a fresh appliance to an exported evidence
+package, follow the [operator runbook](docs/runbook-dgx-spark.md).
+
 ## Install
 
 Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
