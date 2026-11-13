@@ -25,9 +25,8 @@ On the appliance (DGX OS, aarch64, GB10 with 128 GB of unified memory):
 | Docker Engine 29 | `docker version` | Your user in the `docker` group, so `proof` drives the daemon without `sudo`. |
 | Docker Compose v2.24 or later | `docker compose version` | v5 was measured on the appliance. |
 | NVIDIA container toolkit, or CDI | `docker run --rm --gpus all ubuntu nvidia-smi` | The model containers reserve the GPU through Compose's `driver: nvidia` device request. |
-| Python 3.12 | `python3 --version` | With `python3-venv`, to install `proof` in a venv. |
 | Disk | `df -h ~`, `docker system df` | Measured with the four models and the stack: 62 GB of weights in `~/.cache/huggingface`, 26.9 GB of images (24.5 GB of them the vLLM 0.32.0 image), 1.6 GB of containers, a few MB in `$PROOF_HOME`: about 90 GB. Keep at least 200 GB free, for evidence exports and a second vLLM image during an upgrade. |
-| Outbound HTTPS | | To Hugging Face, ghcr.io, Docker Hub and PyPI. |
+| Outbound HTTPS | | To Hugging Face, GitHub, ghcr.io, Docker Hub, PyPI and astral.sh (uv). |
 
 Credentials, before the day:
 
@@ -51,32 +50,37 @@ Credentials, before the day:
 
 ## 2. Install proof on the appliance
 
-The appliance holds no GitHub credentials, so it never clones the repository. Ship a source
-archive from a workstation that has a checkout, then install it into a venv on the appliance.
-
-From the workstation, in a checkout of this repository:
+On the appliance, with a GitHub token that can read `Ethicompass/proof-headless` (the account
+behind the ghcr.io login can issue one; a fine-grained token needs "Contents: read" on this
+repository):
 
 ```sh
-git fetch origin
-git archive --format=tar.gz --prefix=proof-headless/ origin/develop \
-  | ssh <operator>@<appliance-host> 'rm -rf ~/src/proof-headless && mkdir -p ~/src && tar -xzf - -C ~/src'
+read -rsp 'GitHub token: ' GH_TOKEN && export GH_TOKEN && echo
+printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" \
+  | curl -fsSL -K - -H "Accept: application/vnd.github.raw" \
+    "https://api.github.com/repos/Ethicompass/proof-headless/contents/install.sh?ref=main" | sh
+unset GH_TOKEN
 ```
 
-Use a release tag in place of `origin/develop` once one is cut. Then, on the appliance:
+The token is typed at a hidden prompt and handed to curl on standard input, so it reaches neither
+the shell history nor the process list.
+
+The script downloads the latest release (`PROOF_VERSION=<tag>` for another) into
+`~/src/proof-headless`, installs uv if missing and `proof` with `uv tool install` (its own Python
+3.12; `proof` lands in `~/.local/bin`), copies `manifests/dgx-spark/models.yaml` to
+`~/.proof/models.yaml` and creates an empty `~/.config/proof/secrets.env` at mode 600. It writes no
+token to disk or to a command line. Running it again upgrades `proof` and leaves the manifest and
+the secrets as they are. Without a token on the appliance, copy the repository over from a
+workstation and run `sh ~/src/proof-headless/install.sh`:
 
 ```sh
-python3 -m venv ~/.venvs/proof
-~/.venvs/proof/bin/pip install --upgrade pip
-~/.venvs/proof/bin/pip install ~/src/proof-headless
-mkdir -p ~/.local/bin
-ln -sf ~/.venvs/proof/bin/proof ~/.local/bin/proof
-proof version
+git archive --format=tar.gz --prefix=proof-headless/ <tag> \
+  | ssh <operator>@<appliance-host> 'rm -rf ~/src/proof-headless && mkdir -p ~/src && tar -xzf - -C ~/src && sh ~/src/proof-headless/install.sh'
 ```
 
 `~/.local/bin` must be on your `PATH` (DGX OS adds it at login once the directory exists; log in
-again if `proof` is not found). To upgrade, ship a new archive the same way and run the
-`pip install` line again. The archive also carries `manifests/` and `examples/`, which the steps
-below use from `~/src/proof-headless`.
+again if `proof` is not found). `~/src/proof-headless` also carries `manifests/` and `examples/`,
+which the steps below use.
 
 A bundle with brains needs the `vitruvio` CLI on the appliance's `PATH` too, because
 `proof bundle load` pushes brains with `vitruvio dist push`. The rehearsal bundle has no brain.
@@ -131,9 +135,9 @@ The DGX Spark manifest serves four models:
 
 The shares add up to 0.76 against a budget of 0.80.
 
+The install script copied this manifest to `~/.proof/models.yaml`. Check it:
+
 ```sh
-mkdir -p ~/.proof
-cp ~/src/proof-headless/manifests/dgx-spark/models.yaml ~/.proof/models.yaml
 proof models validate
 ```
 
@@ -205,7 +209,7 @@ The stack is Yield (API, compute, driver), Lens (API, run), two MinIO stores, Va
 registry, all from the images an `appliance.lock` names by digest.
 
 ```sh
-proof stack pin --channel develop     # or --channel release
+proof stack pin --channel release     # or --channel develop for unreleased fixes
 ```
 
 `pin` resolves every image of the channel to a digest with the ghcr.io login docker holds and
