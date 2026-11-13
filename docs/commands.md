@@ -151,6 +151,22 @@ standard error.
 delivering its results to the stack's Lens (`http://lens-api:8080/webhooks/yield`) unless the
 matrix sets `webhook_url`. `proof run` submits them to Yield and follows them until each one closes.
 
+`proof spec plan <bundle>` says, before anything is submitted, how many probes each spec will
+produce, per strategy, and how many traces that makes with its replicas. The count is Yield's own:
+it asks compute to run each spec's generation (stage 1), which reads the brain and the catalogue
+and never touches the target, and counts the probe set it writes. Each runs under a preview id,
+`plan-<run>-<12 hex of the request>`, so the run's own stage-1 record stays unwritten and the run
+generates its set again when it starts (generation is deterministic, so it is the same set).
+Planning again with nothing changed answers from the preview's record at once. It warns about a
+strategy that produced no probe, one set aside for the run's shape, entities a construction could
+not deform, unverified probes, and traces above the run's `max_target_calls`. A spec whose
+generation fails is reported with compute's reason, and the command exits 1. The Exploiter's
+traces are not counted: it decides them during the run, within the same budget.
+
+```sh
+proof spec plan <bundle>                  # --only <run> for some; --json for the numbers
+```
+
 ```sh
 proof run queue <bundle>                  # two runs in flight at a time; --concurrency to change
 proof run queue <bundle> --only r1-disclosure
