@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.2](https://github.com/Ethicompass/proof-headless/compare/proof-headless-v0.1.1...proof-headless-v0.1.2) (2026-11-13)
+
+
+### Features
+
+* **cli:** install proof on an appliance with one script ([4f3b863](https://github.com/Ethicompass/proof-headless/commit/4f3b8636d10a9c55b8a5f4fb03afab5374bd6e3e))
+* **cli:** install proof with one script, and a short README ([527383d](https://github.com/Ethicompass/proof-headless/commit/527383d12c774329647540150fb46afbbd9dfb67))
+
+
+### Bug Fixes
+
+* **cli:** keep the token off command lines, check uv, run the install only once fully downloaded ([4d18691](https://github.com/Ethicompass/proof-headless/commit/4d186914b22564b4e5fb2d97b853d85e6cea9fef))
+
 ## [0.1.1](https://github.com/Ethicompass/proof-headless/compare/proof-headless-v0.1.0...proof-headless-v0.1.1) (2026-11-13)
 
 
