@@ -487,7 +487,7 @@ queue ended with the run failed, start a queue for that run alone, without rende
 proof run queue $B --only <run-id> --retries 2
 ```
 
-The resume replays the recorded grades (yield driver 0.1.11, on both channels) and finishes
+The resume replays the recorded grades (yield driver 0.1.11 or later, on both channels) and finishes
 quickly.
 A run that cannot fit its budget even so needs a new run id with a larger `max_wall_seconds`:
 add it to `matrix.toml`, then `proof spec render` and queue it.
