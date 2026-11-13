@@ -9,6 +9,12 @@
 
 Open each pull request from a branch off `develop`, and link the issue it closes.
 
+A promotion only opens a release PR when it carries a `feat` or `fix` commit; `chore`, `docs`,
+`test` and `ci` are not released on their own. A change to what the appliance runs, such as the
+`release` channel in `channels.yaml`, is a `fix(stack)` (or `feat(stack)`), because an operator
+installing the release gets it. When such a change already went in under another type, a commit
+whose body ends with `Release-As: <version>` makes release-please cut that version.
+
 ## Commits
 
 Use Conventional Commits with a **mandatory scope**: `feat(models): ...`, `fix(runs): ...`. The
