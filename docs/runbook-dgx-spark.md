@@ -50,28 +50,18 @@ Credentials, before the day:
 
 ## 2. Install proof on the appliance
 
-On the appliance, with a GitHub token that can read `Ethicompass/proof-headless` (the account
-behind the ghcr.io login can issue one; a fine-grained token needs "Contents: read" on this
-repository):
+On the appliance:
 
 ```sh
-read -rsp 'GitHub token: ' GH_TOKEN && export GH_TOKEN && echo
-printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" \
-  | curl -fsSL -K - -H "Accept: application/vnd.github.raw" \
-    "https://api.github.com/repos/Ethicompass/proof-headless/contents/install.sh?ref=main" | sh
-unset GH_TOKEN
+curl -fsSL https://raw.githubusercontent.com/Ethicompass/proof-headless/main/install.sh | sh
 ```
-
-The token is typed at a hidden prompt and handed to curl on standard input, so it reaches neither
-the shell history nor the process list.
 
 The script downloads the latest release (`PROOF_VERSION=<tag>` for another) into
 `~/src/proof-headless`, installs uv if missing and `proof` with `uv tool install` (its own Python
 3.12; `proof` lands in `~/.local/bin`), copies `manifests/dgx-spark/models.yaml` to
-`~/.proof/models.yaml` and creates an empty `~/.config/proof/secrets.env` at mode 600. It writes no
-token to disk or to a command line. Running it again upgrades `proof` and leaves the manifest and
-the secrets as they are. Without a token on the appliance, copy the repository over from a
-workstation and run `sh ~/src/proof-headless/install.sh`:
+`~/.proof/models.yaml` and creates an empty `~/.config/proof/secrets.env` at mode 600. Running it
+again upgrades `proof` and leaves the manifest and the secrets as they are. On an appliance with no
+route to GitHub, copy the repository over from a workstation and run the script from the copy:
 
 ```sh
 git archive --format=tar.gz --prefix=proof-headless/ <tag> \
