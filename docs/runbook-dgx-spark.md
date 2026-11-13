@@ -294,6 +294,19 @@ the stack's Lens. `--bind ROLE=MODEL` rebinds a role for this render; `--json` p
 Render again after every `bundle load`. Do not render again between a run's first submission and
 its end: Yield freezes a run's spec, and a different spec under the same run id is refused (409).
 
+Then count what the matrix will do before it runs:
+
+```sh
+proof spec plan $B
+```
+
+It runs each spec's generation in Yield compute under a preview id (the target is never touched)
+and prints, per run, the probes by strategy, the replicas, the traces and the budget's
+`max_target_calls`, with totals. Adjust `matrix.toml` (subjects, strategies, replicas, budget) and
+render again until the totals are what the engagement wants. Generation that needs the generator
+model costs one batched call per entity kind; the rest is reading the brain. A run it cannot plan
+is reported with compute's reason, which is the failure the run would hit when it generates.
+
 ## 9. Run the matrix
 
 ```sh
