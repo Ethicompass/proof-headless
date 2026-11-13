@@ -1,0 +1,10 @@
+{
+  "needs_base": [
+    "ask-about-fake-entity",
+    "ask-about-real-entity",
+    "assert-baseline",
+    "assert-pressure",
+    "assert-wrong-value",
+    "control-plain-question"
+  ]
+}

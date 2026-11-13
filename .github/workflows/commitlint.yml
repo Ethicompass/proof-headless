@@ -1,0 +1,22 @@
+name: Commit Lint
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+      - name: Install commitizen
+        run: uv tool install commitizen
+      # The scope is mandatory: the schema_pattern in pyproject.toml does not close the scope group
+      # with `?`, so a commit names the part of the appliance it changes.
+      - name: Lint commits
+        run: |
+          cz check \
+            --rev-range ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
