@@ -349,7 +349,8 @@ errored, a mean latency of 16 s, about 120 generated tokens per second, 2 to 3 r
 and its KV cache under 1%. The GPU had headroom. The bottleneck was the judge grading each unit
 in sequence with reasoning on, at 22 to 41 s per grade.
 
-- Start with `--concurrency 4` to `6`, and watch latency and anomalies before raising it.
+- Start with `--concurrency 4` to `6`, and watch latency and anomalies before raising it. This is
+  a recommendation from the headroom above, not a measurement: the load test ran 3 at once.
 - Size each run's `budget.max_wall_seconds` in `matrix.toml` so the whole run fits in one
   attempt: count its conversations times about 40 s of grading each, plus the attack, with a
   margin. A run that outlives its budget fails and needs a resume.
