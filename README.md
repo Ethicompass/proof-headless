@@ -29,6 +29,9 @@ proof models up && proof doctor                      # serve the models and prob
 docker login ghcr.io                                 # Yield's and Lens's images are private
 proof stack pin --channel release                    # pin the released images by digest
 proof stack up --bundle <bundle>                     # Yield, Lens and the brain registry
+proof bundle load <bundle>                           # catalogues, profile, brains
+proof spec render <bundle>                           # one Yield run spec per run
+proof spec plan <bundle>                             # probes and traces per run
 proof run queue <bundle> && proof run watch <bundle> # run the matrix
 proof lens status <client>                           # every run has its Lens result
 proof evidence export <client>                       # the checksummed evidence package
@@ -45,6 +48,7 @@ proof evidence export <client>                       # the checksummed evidence 
 | `proof secrets` | Sets a credential in the secrets file; lists names, never values |
 | `proof bundle` | Validates and loads a client bundle (see `examples/bundle-acme`) |
 | `proof spec render` | Renders Yield run specs from a bundle's run matrix and role bindings |
+| `proof spec plan` | Counts each spec's probes and traces with Yield's own generation |
 | `proof run` | Queues, watches and re-measures the runs |
 | `proof lens` | Makes sure every Yield run has its Lens result |
 | `proof evidence` | Exports and verifies the evidence package |
