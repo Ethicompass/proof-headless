@@ -218,7 +218,9 @@ run. `develop` follows Yield's and Lens's integration branches; `release` names 
 versions. Review a change of the lock like a change of code: it decides which Yield and Lens
 measure the engagement. A run resumed after a failure replays its recorded grades with
 `yield-driver` 0.1.11 or later, which both channels now pin (`release` names yield api 0.1.14,
-driver 0.1.11 and compute 0.1.15). `--set NAME=REF` resolves one image from another reference.
+driver 0.1.12 and compute 0.1.16, lens api 0.1.11 and run 0.1.13). Compute 0.1.16 reads a
+reasoning metric judge's label from its answer (yield #168). `--set NAME=REF` resolves one image
+from another reference.
 
 ```sh
 proof stack up --bundle ~/src/proof-headless/examples/bundle-rehearsal
@@ -485,7 +487,7 @@ queue ended with the run failed, start a queue for that run alone, without rende
 proof run queue $B --only <run-id> --retries 2
 ```
 
-The resume replays the recorded grades (yield driver 0.1.11, on both channels) and finishes
+The resume replays the recorded grades (yield driver 0.1.11 or later, on both channels) and finishes
 quickly.
 A run that cannot fit its budget even so needs a new run id with a larger `max_wall_seconds`:
 add it to `matrix.toml`, then `proof spec render` and queue it.
