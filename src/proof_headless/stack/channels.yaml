@@ -12,9 +12,9 @@ develop:
   lens-api: ghcr.io/ethicompass/lens-api:develop
   lens-run: ghcr.io/ethicompass/lens-run:develop
 release:
-  yield-api: ghcr.io/ethicompass/yield-api:0.1.13
-  yield-driver: ghcr.io/ethicompass/yield-driver:0.1.10
-  yield-compute: ghcr.io/ethicompass/yield-compute:0.1.14
+  yield-api: ghcr.io/ethicompass/yield-api:0.1.14
+  yield-driver: ghcr.io/ethicompass/yield-driver:0.1.11
+  yield-compute: ghcr.io/ethicompass/yield-compute:0.1.15
   lens-api: ghcr.io/ethicompass/lens-api:0.1.10
   lens-run: ghcr.io/ethicompass/lens-run:0.1.12
 common:
